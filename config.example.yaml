@@ -1,0 +1,71 @@
+# tron-usdt-listener configuration.
+# Copy to config.yaml and adjust. Every value can be overridden by an
+# environment variable (see README "Configuration"); keep secrets in env.
+
+log:
+  level: info          # debug | info | warn | error
+  format: json         # json | text   (application logs go to stderr)
+
+tron:
+  api_url: https://api.trongrid.io   # any TRON full node HTTP API (TronGrid compatible)
+  api_key: ""                        # env TRON_PRO_API_KEY (optional, raises rate limits)
+  timeout: 15s
+  rps: 3                             # client-side request rate limit; keep low without an API key
+  max_retries: 8                     # per request, exponential backoff, honours 429 Retry-After
+
+token:
+  contract: TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t   # USDT (TRC-20) on TRON mainnet
+  symbol: USDT
+  decimals: 6
+
+listener:
+  confirmations: 20      # stay N blocks behind head (~60s); 19+ ≈ solidified/irreversible
+  poll_interval: 3s      # TRON produces a block every ~3s
+  start_block: 0         # used only when no cursor exists: 0 = safe head, N = exact block, -N = N blocks back
+  batch_size: 20         # max blocks per iteration
+  concurrency: 2         # parallel block fetches (blocks are still delivered in order)
+  dedupe_cache_size: 100000
+  dispatch_timeout: 30s  # per delivery attempt; an in-flight block is finished on shutdown
+
+cursor:
+  file: ./data/cursor.json   # ignored when the postgres sink is enabled (cursor stored in DB)
+
+filter:
+  # Leave watch_addresses empty and min_amount "0" to emit every transfer (firehose).
+  watch_addresses: []
+  #  - TXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+  direction: both        # both | incoming | outgoing (relative to watched addresses)
+  min_amount: "0"        # large-transfer threshold in USDT, e.g. "100000"
+  mode: any              # any = watched OR large, all = watched AND large
+
+http:
+  addr: ":9090"              # /metrics and /healthz; empty disables
+  health_stale_after: 2m     # /healthz returns 503 if no progress for this long
+
+sinks:
+  stdout:
+    enabled: true            # one JSON line per transfer on stdout
+
+  webhook:
+    enabled: false
+    url: ""                  # env WEBHOOK_URL
+    secret: ""               # env WEBHOOK_SECRET (HMAC-SHA256 signing key)
+    timeout: 10s
+    max_retries: 5
+    best_effort: false       # false = block is retried until the webhook accepts it
+    headers: {}
+
+  telegram:
+    enabled: false
+    bot_token: ""            # env TELEGRAM_BOT_TOKEN
+    chat_id: ""              # env TELEGRAM_CHAT_ID
+    min_amount: ""           # optional extra threshold for alerts (watched-address hits always alert)
+    max_messages_per_block: 10
+    best_effort: true        # alerts never stall the pipeline
+    api_base: ""             # default https://api.telegram.org (override for a proxy)
+
+  postgres:
+    enabled: false
+    dsn: ""                  # env DATABASE_URL, e.g. postgres://user:pass@localhost:5432/tron?sslmode=disable
+    cursor_name: default
+    best_effort: false

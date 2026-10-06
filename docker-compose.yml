@@ -1,0 +1,45 @@
+# Listener + PostgreSQL. Usage:
+#   cp .env.example .env   # optional: API key, Telegram, webhook, filters
+#   docker compose up -d --build
+#   docker compose logs -f listener
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: listener
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-listener}
+      POSTGRES_DB: tron
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U listener -d tron"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  listener:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+    image: tron-usdt-listener:local
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SINK_POSTGRES_ENABLED: "true"
+      DATABASE_URL: postgres://listener:${POSTGRES_PASSWORD:-listener}@postgres:5432/tron?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9090:9090"   # /metrics and /healthz
+    volumes:
+      - listener-data:/data
+    stop_grace_period: 40s       # lets the in-flight block finish on SIGTERM
+
+volumes:
+  pgdata:
+  listener-data:

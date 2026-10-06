@@ -1,0 +1,6 @@
+bin/
+data/
+.env
+config.yaml
+.git/
+*.out

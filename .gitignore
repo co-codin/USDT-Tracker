@@ -1,0 +1,18 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Local state & secrets
+/data/
+.env
+config.yaml
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

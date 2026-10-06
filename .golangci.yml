@@ -1,0 +1,29 @@
+version: "2"
+
+linters:
+  default: standard        # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - noctx
+    - revive
+    - unconvert
+    - unparam
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Fprint
+  exclusions:
+    presets:
+      - std-error-handling   # e.g. unchecked defer resp.Body.Close()
+    rules:
+      - path: _test\.go
+        linters: [gosec, noctx, bodyclose, errcheck, unparam]
+
+formatters:
+  enable:
+    - gofmt
