@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/co-codin/tron-usdt-listener/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/model"
 )
 
 type fakeSink struct {

@@ -18,12 +18,12 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/co-codin/tron-usdt-listener/internal/cursor"
-	"github.com/co-codin/tron-usdt-listener/internal/filter"
-	"github.com/co-codin/tron-usdt-listener/internal/metrics"
-	"github.com/co-codin/tron-usdt-listener/internal/retry"
-	"github.com/co-codin/tron-usdt-listener/internal/sink"
-	"github.com/co-codin/tron-usdt-listener/internal/source"
+	"github.com/co-codin/USDT-Tracker/internal/cursor"
+	"github.com/co-codin/USDT-Tracker/internal/filter"
+	"github.com/co-codin/USDT-Tracker/internal/metrics"
+	"github.com/co-codin/USDT-Tracker/internal/retry"
+	"github.com/co-codin/USDT-Tracker/internal/sink"
+	"github.com/co-codin/USDT-Tracker/internal/source"
 )
 
 // Config tunes the processing loop.

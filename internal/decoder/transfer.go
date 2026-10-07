@@ -8,8 +8,8 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/co-codin/tron-usdt-listener/internal/model"
-	"github.com/co-codin/tron-usdt-listener/internal/tron"
+	"github.com/co-codin/USDT-Tracker/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/tron"
 )
 
 // TransferTopic is keccak256("Transfer(address,address,uint256)").

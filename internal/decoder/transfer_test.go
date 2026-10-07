@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/co-codin/tron-usdt-listener/internal/tron"
+	"github.com/co-codin/USDT-Tracker/internal/tron"
 )
 
 func usdtDecoder(t *testing.T) *Decoder {

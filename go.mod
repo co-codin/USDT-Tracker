@@ -1,4 +1,4 @@
-module github.com/co-codin/tron-usdt-listener
+module github.com/co-codin/USDT-Tracker
 
 go 1.26.0
 

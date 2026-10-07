@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/co-codin/tron-usdt-listener/internal/retry"
+	"github.com/co-codin/USDT-Tracker/internal/retry"
 )
 
 // DefaultBaseURL is the public TronGrid mainnet endpoint.

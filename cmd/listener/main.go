@@ -20,8 +20,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/co-codin/tron-usdt-listener/internal/app"
-	"github.com/co-codin/tron-usdt-listener/internal/config"
+	"github.com/co-codin/USDT-Tracker/internal/app"
+	"github.com/co-codin/USDT-Tracker/internal/config"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".

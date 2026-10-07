@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/co-codin/tron-usdt-listener/internal/cursor"
-	"github.com/co-codin/tron-usdt-listener/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/cursor"
+	"github.com/co-codin/USDT-Tracker/internal/model"
 )
 
 // Recorder receives delivery telemetry (implemented by the metrics package).

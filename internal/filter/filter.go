@@ -6,8 +6,8 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/co-codin/tron-usdt-listener/internal/model"
-	"github.com/co-codin/tron-usdt-listener/internal/tron"
+	"github.com/co-codin/USDT-Tracker/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/tron"
 )
 
 // Direction restricts which side of a transfer a watched address must be on.

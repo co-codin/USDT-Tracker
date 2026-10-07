@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/co-codin/tron-usdt-listener/internal/decoder"
-	"github.com/co-codin/tron-usdt-listener/internal/model"
-	"github.com/co-codin/tron-usdt-listener/internal/tron"
+	"github.com/co-codin/USDT-Tracker/internal/decoder"
+	"github.com/co-codin/USDT-Tracker/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/tron"
 )
 
 // Block is a processed block with all decoded token transfers (unfiltered).

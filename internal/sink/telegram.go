@@ -16,8 +16,8 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/co-codin/tron-usdt-listener/internal/model"
-	"github.com/co-codin/tron-usdt-listener/internal/retry"
+	"github.com/co-codin/USDT-Tracker/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/retry"
 )
 
 // TelegramConfig configures the Telegram alert sink.

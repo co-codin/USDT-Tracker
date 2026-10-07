@@ -22,12 +22,12 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/co-codin/tron-usdt-listener/internal/app"
-	"github.com/co-codin/tron-usdt-listener/internal/config"
-	"github.com/co-codin/tron-usdt-listener/internal/retry"
-	"github.com/co-codin/tron-usdt-listener/internal/sink"
-	"github.com/co-codin/tron-usdt-listener/internal/tron/trontest"
-	"github.com/co-codin/tron-usdt-listener/pkg/webhooksig"
+	"github.com/co-codin/USDT-Tracker/internal/app"
+	"github.com/co-codin/USDT-Tracker/internal/config"
+	"github.com/co-codin/USDT-Tracker/internal/retry"
+	"github.com/co-codin/USDT-Tracker/internal/sink"
+	"github.com/co-codin/USDT-Tracker/internal/tron/trontest"
+	"github.com/co-codin/USDT-Tracker/pkg/webhooksig"
 )
 
 var fastBackoff = retry.Backoff{Initial: time.Millisecond, Max: 5 * time.Millisecond}

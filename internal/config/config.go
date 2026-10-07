@@ -14,8 +14,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/co-codin/tron-usdt-listener/internal/model"
-	"github.com/co-codin/tron-usdt-listener/internal/tron"
+	"github.com/co-codin/USDT-Tracker/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/tron"
 )
 
 // USDTContract is the USDT TRC-20 contract on TRON mainnet.

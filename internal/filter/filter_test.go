@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/co-codin/tron-usdt-listener/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/model"
 )
 
 const (

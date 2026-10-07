@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/co-codin/tron-usdt-listener/internal/retry"
+	"github.com/co-codin/USDT-Tracker/internal/retry"
 )
 
 func newTestClient(url string) *Client {

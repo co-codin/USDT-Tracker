@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/co-codin/tron-usdt-listener/internal/decoder"
-	"github.com/co-codin/tron-usdt-listener/internal/tron"
+	"github.com/co-codin/USDT-Tracker/internal/decoder"
+	"github.com/co-codin/USDT-Tracker/internal/tron"
 )
 
 type fakeAPI struct {

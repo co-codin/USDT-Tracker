@@ -16,8 +16,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/co-codin/tron-usdt-listener/internal/cursor"
-	"github.com/co-codin/tron-usdt-listener/internal/sink"
+	"github.com/co-codin/USDT-Tracker/internal/cursor"
+	"github.com/co-codin/USDT-Tracker/internal/sink"
 )
 
 //go:embed migrations/*.sql

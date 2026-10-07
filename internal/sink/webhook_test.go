@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/co-codin/tron-usdt-listener/internal/model"
-	"github.com/co-codin/tron-usdt-listener/internal/retry"
-	"github.com/co-codin/tron-usdt-listener/pkg/webhooksig"
+	"github.com/co-codin/USDT-Tracker/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/retry"
+	"github.com/co-codin/USDT-Tracker/pkg/webhooksig"
 )
 
 func sampleBatch() Batch {

@@ -6,7 +6,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/co-codin/tron-usdt-listener/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/model"
 )
 
 // Batch is the set of matched transfers from a single block.

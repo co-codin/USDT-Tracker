@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/co-codin/tron-usdt-listener/internal/cursor"
-	"github.com/co-codin/tron-usdt-listener/internal/model"
-	"github.com/co-codin/tron-usdt-listener/internal/sink"
+	"github.com/co-codin/USDT-Tracker/internal/cursor"
+	"github.com/co-codin/USDT-Tracker/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/sink"
 )
 
 // Integration test: runs only when TEST_DATABASE_URL is set, e.g.

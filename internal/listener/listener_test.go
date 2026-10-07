@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/co-codin/tron-usdt-listener/internal/cursor"
-	"github.com/co-codin/tron-usdt-listener/internal/filter"
-	"github.com/co-codin/tron-usdt-listener/internal/model"
-	"github.com/co-codin/tron-usdt-listener/internal/retry"
-	"github.com/co-codin/tron-usdt-listener/internal/sink"
-	"github.com/co-codin/tron-usdt-listener/internal/source"
+	"github.com/co-codin/USDT-Tracker/internal/cursor"
+	"github.com/co-codin/USDT-Tracker/internal/filter"
+	"github.com/co-codin/USDT-Tracker/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/retry"
+	"github.com/co-codin/USDT-Tracker/internal/sink"
+	"github.com/co-codin/USDT-Tracker/internal/source"
 )
 
 // fakeSource serves one transfer per block; failOnce makes the first fetch

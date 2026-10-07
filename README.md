@@ -103,7 +103,7 @@ pkg/webhooksig/          sign/verify helpers you can import in webhook consumers
 ### Local (Go 1.26+)
 
 ```bash
-git clone https://github.com/co-codin/tron-usdt-listener && cd tron-usdt-listener
+git clone https://github.com/co-codin/USDT-Tracker && cd tron-usdt-listener
 make build
 ./bin/tron-usdt-listener            # firehose: every USDT transfer as JSON on stdout
 ```
@@ -224,7 +224,7 @@ X-Signature-256: sha256=<hex HMAC-SHA256(secret, "<timestamp>.<raw body>")>
 permanent. Verify signatures in Go with the bundled package:
 
 ```go
-import "github.com/co-codin/tron-usdt-listener/pkg/webhooksig"
+import "github.com/co-codin/USDT-Tracker/pkg/webhooksig"
 
 err := webhooksig.Verify([]byte(secret),
     r.Header.Get(webhooksig.HeaderTimestamp), r.Header.Get(webhooksig.HeaderSignature),
