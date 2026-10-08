@@ -9,13 +9,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
+	"github.com/co-codin/USDT-Tracker/internal/chain/tron/trc20"
 	"github.com/co-codin/USDT-Tracker/internal/config"
 	"github.com/co-codin/USDT-Tracker/internal/cursor"
-	"github.com/co-codin/USDT-Tracker/internal/decoder"
 	"github.com/co-codin/USDT-Tracker/internal/filter"
 	"github.com/co-codin/USDT-Tracker/internal/listener"
 	"github.com/co-codin/USDT-Tracker/internal/metrics"
@@ -24,8 +26,7 @@ import (
 	"github.com/co-codin/USDT-Tracker/internal/server"
 	"github.com/co-codin/USDT-Tracker/internal/sink"
 	"github.com/co-codin/USDT-Tracker/internal/sink/postgres"
-	"github.com/co-codin/USDT-Tracker/internal/source"
-	"github.com/co-codin/USDT-Tracker/internal/tron"
+	"github.com/co-codin/USDT-Tracker/internal/watch"
 )
 
 // Options are runtime knobs that are not part of the user configuration.
@@ -76,29 +77,31 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		Observer:   a.Metrics,
 		Logger:     log,
 	})
-	dec := decoder.New(decoder.Token{Contract: contract, Symbol: cfg.Token.Symbol, Decimals: cfg.Token.Decimals})
-	src := source.NewTronSource(client, dec, log, a.Metrics.DecodeErrors.Inc)
+	dec := trc20.New(trc20.Token{Contract: contract, Symbol: cfg.Token.Symbol, Decimals: cfg.Token.Decimals})
+	src := trc20.NewSource(client, dec, log, a.Metrics.DecodeErrors.Inc)
 
 	minAmount, err := cfg.MinAmount()
 	if err != nil {
 		return nil, err
 	}
-	flt, err := filter.New(filter.Config{
-		WatchAddresses: cfg.Filter.WatchAddresses,
-		Direction:      filter.Direction(cfg.Filter.Direction),
-		MinAmount:      minAmount,
-		Mode:           filter.Mode(cfg.Filter.Mode),
-	})
-	if err != nil {
+	if _, err := filter.New(staticFilterConfig(cfg, minAmount)); err != nil { // fail fast, before connecting
 		return nil, err
 	}
-
 	entries, pg, err := buildSinks(ctx, cfg, opts.Stdout)
 	if err != nil {
 		return nil, err
 	}
 	a.pg = pg
 	a.disp = sink.NewDispatcher(entries, cfg.Listener.DedupeCacheSize, a.Metrics, log)
+
+	var watchSrc watch.Source // nil interface when Postgres is off
+	if pg != nil {
+		watchSrc = pg.Watchlist()
+	}
+	matcher, dyn, err := buildFilter(ctx, cfg, minAmount, watchSrc, log)
+	if err != nil {
+		return nil, errors.Join(err, a.disp.Close())
+	}
 
 	var store cursor.Store
 	switch {
@@ -118,10 +121,23 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		Concurrency:     cfg.Listener.Concurrency,
 		DispatchTimeout: cfg.Listener.DispatchTimeout.D(),
 		Backoff:         opts.Backoff,
-	}, src, flt, a.disp, store, a.Metrics, log)
+	}, src, matcher, a.disp, store, a.Metrics, log)
 
 	if cfg.HTTP.Addr != "" && !opts.Backfill {
 		a.srv = server.New(cfg.HTTP.Addr, a.Metrics.Handler(), a.health, log)
+		var ws watch.Store // nil interface (not a typed nil) when Postgres is off → 503
+		if pg != nil {
+			ws = pg.Watchlist()
+		}
+		a.srv.Handle("/v1/", watch.NewAPI(watch.APIConfig{
+			Token: cfg.API.Token, Store: ws, Static: canonicalAddresses(cfg.Filter.WatchAddresses),
+			OnChange: func() {
+				if dyn != nil {
+					dyn.Invalidate()
+				}
+			},
+			Log: log,
+		}))
 	}
 
 	if cfg.Tron.APIKey == "" {
@@ -136,6 +152,8 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		"sinks", strings.Join(a.disp.Names(), ","),
 		"cursor", a.cursorDesc(),
 		"watch_addresses", len(cfg.Filter.WatchAddresses),
+		"runtime_watch_list", pg != nil,
+		"admin_api", cfg.API.Token != "" && cfg.HTTP.Addr != "",
 		"min_amount", cfg.Filter.MinAmount,
 	)
 	return a, nil
@@ -197,6 +215,49 @@ func (a *App) cursorDesc() string {
 	default:
 		return "file:" + a.cfg.Cursor.File
 	}
+}
+
+// canonicalAddresses converts validated config addresses to base58.
+func canonicalAddresses(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if a, err := tron.ParseAddress(s); err == nil {
+			out = append(out, a.String())
+		}
+	}
+	return out
+}
+
+func staticFilterConfig(cfg config.Config, minAmount *big.Int) filter.Config {
+	return filter.Config{
+		WatchAddresses: cfg.Filter.WatchAddresses,
+		Direction:      filter.Direction(cfg.Filter.Direction),
+		MinAmount:      minAmount,
+		Mode:           filter.Mode(cfg.Filter.Mode),
+	}
+}
+
+// buildFilter returns the static filter, or — when a watch source (Postgres) is set — a
+// Dynamic filter that merges the static addresses with the enabled rows of
+// watch_addresses. With the admin API enabled the watch rule stays active
+// even when the list is empty, so removing the last deposit address never
+// turns the listener into a firehose.
+func buildFilter(ctx context.Context, cfg config.Config, minAmount *big.Int, src watch.Source, log *slog.Logger) (listener.Matcher, *filter.Dynamic, error) {
+	fCfg := staticFilterConfig(cfg, minAmount)
+	if src == nil {
+		f, err := filter.New(fCfg)
+		return f, nil, err
+	}
+	fCfg.Dynamic = cfg.API.Token != ""
+	dyn, err := filter.NewDynamic(fCfg, src, cfg.Filter.ReloadInterval.D())
+	if err != nil {
+		return nil, nil, err
+	}
+	dyn.SetLogger(log)
+	if err := dyn.Refresh(ctx); err != nil {
+		return nil, nil, err
+	}
+	return dyn, dyn, nil
 }
 
 func buildSinks(ctx context.Context, cfg config.Config, stdout io.Writer) ([]sink.Entry, *postgres.Store, error) {

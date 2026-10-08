@@ -1,0 +1,29 @@
+usdt-tracker {{ .Chart.AppVersion }} is deployed as {{ include "usdt-tracker.fullname" . }} (namespace {{ .Release.Namespace }}).
+
+Health / metrics:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "usdt-tracker.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl -s localhost:{{ .Values.service.port }}/healthz
+
+{{- if not (include "usdt-tracker.databaseEnabled" .) }}
+
+WARNING: no database configured. The cursor lives in /data ({{ if .Values.persistence.enabled }}PVC{{ else }}emptyDir: lost on restart{{ end }}) and the runtime
+address API (/v1/addresses) answers 503. Enable postgresql.enabled or externalDatabase.*.
+{{- end }}
+
+{{- if or .Values.secrets.apiToken .Values.secrets.existingSecret }}
+
+Admin API (bearer token from secret {{ include "usdt-tracker.secretName" . }}, key API_TOKEN):
+  TOKEN=$(kubectl -n {{ .Release.Namespace }} get secret {{ include "usdt-tracker.secretName" . }} -o jsonpath='{.data.API_TOKEN}' | base64 -d)
+  curl -s -X POST localhost:{{ .Values.service.port }}/v1/addresses -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -d '{"address":"T...","label":"order 1"}'
+{{- else }}
+
+Admin API is DISABLED (no API token). Enable it with
+  --set secrets.apiToken=$(openssl rand -hex 32)   (or secrets.existingSecret with key API_TOKEN)
+{{- end }}
+
+{{- if and .Values.postgresql.enabled (eq (toString .Values.image.tag) "latest") }}
+
+NOTE: demo defaults (image tag "latest", bundled Bitnami PostgreSQL whose free images are
+"latest"-only/non-production). For production pin image.tag/digest and use externalDatabase.
+{{- end }}

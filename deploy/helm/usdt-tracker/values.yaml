@@ -1,0 +1,180 @@
+# Default values for usdt-tracker.
+# NEVER put real secrets in this file; pass them with --set / a private values
+# file, or reference an existing Kubernetes Secret (secrets.existingSecret).
+
+image:
+  # Placeholder: build and push the repo's Dockerfile, then override.
+  repository: ghcr.io/co-codin/usdt-tracker
+  tag: latest            # pin an immutable tag (or digest) in production
+  digest: ""             # e.g. sha256:...; wins over tag when set
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# The listener is a single-writer process (one cursor). Keep exactly one
+# replica; the Deployment uses the Recreate strategy so two pods never run
+# side by side during upgrades.
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+# --- Application configuration ---------------------------------------------
+# Rendered into config.yaml (mounted at /etc/tron-usdt-listener/config.yaml).
+# Same schema as config.example.yaml; unknown keys are rejected by the app.
+# Secrets and database settings are injected as env vars and override this.
+config:
+  log:
+    level: info
+    format: json
+  tron:
+    api_url: https://api.trongrid.io
+    rps: 3
+  listener:
+    confirmations: 20
+    start_block: 0
+  filter:
+    watch_addresses: []    # static addresses; runtime ones go through the API
+    direction: both
+    min_amount: "0"
+    mode: any
+    reload_interval: 5s
+  sinks:
+    stdout:
+      enabled: true        # JSON lines in the pod log
+    webhook:
+      enabled: false
+      url: ""              # secret part (signing key) is secrets.webhookSecret
+    telegram:
+      enabled: false
+      chat_id: ""          # bot token is secrets.telegramBotToken
+
+# Extra plain env vars (non-secret), e.g. {LISTENER_START_BLOCK: "-100"}.
+extraEnv: {}
+
+# --- Secrets ------------------------------------------------------------------
+secrets:
+  # Use an existing Secret instead of creating one. Recognised keys (all
+  # optional): API_TOKEN, TRON_PRO_API_KEY, TELEGRAM_BOT_TOKEN, WEBHOOK_SECRET,
+  # DATABASE_URL.
+  existingSecret: ""
+  # Values below are only used when existingSecret is empty. Leave empty here.
+  apiToken: ""             # admin API bearer token (>= 16 chars); empty = API disabled
+  tronApiKey: ""           # TronGrid TRON-PRO-API-KEY
+  telegramBotToken: ""
+  webhookSecret: ""        # HMAC-SHA256 signing key for the webhook sink
+
+# --- Database -----------------------------------------------------------------
+# Option A (default, demo): bundled Bitnami PostgreSQL subchart.
+postgresql:
+  enabled: true
+  auth:
+    username: listener
+    database: tron
+    password: ""           # empty = generated and kept in <release>-postgresql
+    existingSecret: ""     # or reference your own secret (key: password)
+    secretKeys:
+      userPasswordKey: password
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {memory: 512Mi}
+
+# Option B (production): external/managed Postgres. Set postgresql.enabled=false
+# and either url (stored in the chart's Secret) or existingSecret+key.
+externalDatabase:
+  url: ""                  # postgres://user:pass@host:5432/db?sslmode=require
+  existingSecret: ""
+  existingSecretKey: DATABASE_URL
+
+# --- Networking ---------------------------------------------------------------
+containerPort: 9090        # /metrics, /healthz, /v1/addresses
+
+service:
+  type: ClusterIP
+  port: 9090
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt
+  hosts:
+    - host: usdt-tracker.example.com
+      paths:
+        # Only the admin API by default; /metrics and /healthz stay internal.
+        - path: /v1
+          pathType: Prefix
+  tls: []
+  #  - secretName: usdt-tracker-tls
+  #    hosts: [usdt-tracker.example.com]
+
+serviceMonitor:
+  enabled: false           # requires the Prometheus Operator CRDs
+  interval: 30s
+  labels: {}
+
+# --- Probes -------------------------------------------------------------------
+# /healthz returns 503 when no block was processed for http.health_stale_after
+# (2m), e.g. TRON node or DB unreachable. Liveness is lenient so a remote
+# outage does not cause a restart storm.
+livenessProbe:
+  httpGet: {path: /healthz, port: http}
+  initialDelaySeconds: 15
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 10
+readinessProbe:
+  httpGet: {path: /healthz, port: http}
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# --- Resources & security -----------------------------------------------------
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# /data holds the file cursor when no database is configured. emptyDir loses
+# it on pod restart (the listener then restarts at the safe head); enable a
+# PVC or, better, use Postgres (cursor stored in the DB).
+persistence:
+  enabled: false
+  size: 1Gi
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+
+terminationGracePeriodSeconds: 40   # finish the in-flight block on SIGTERM
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

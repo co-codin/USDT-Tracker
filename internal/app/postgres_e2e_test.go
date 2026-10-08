@@ -10,8 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain/tron/trontest"
 	"github.com/co-codin/USDT-Tracker/internal/config"
-	"github.com/co-codin/USDT-Tracker/internal/tron/trontest"
 )
 
 // TestE2E_PostgresSinkAndCursor runs the full pipeline with the Postgres sink

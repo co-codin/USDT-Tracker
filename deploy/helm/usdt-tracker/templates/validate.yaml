@@ -1,0 +1,12 @@
+{{- /* Render-time guard rails (no resources). */ -}}
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail "replicaCount must be 1: the listener is a single writer (one cursor); scale vertically" }}
+{{- end }}
+{{- if and .Values.postgresql.enabled (or .Values.externalDatabase.url .Values.externalDatabase.existingSecret) }}
+{{- fail "set either postgresql.enabled=true (bundled) or externalDatabase.*, not both" }}
+{{- end }}
+{{- with .Values.secrets.apiToken }}
+{{- if lt (len .) 16 }}
+{{- fail "secrets.apiToken must be at least 16 characters (e.g. openssl rand -hex 32)" }}
+{{- end }}
+{{- end }}

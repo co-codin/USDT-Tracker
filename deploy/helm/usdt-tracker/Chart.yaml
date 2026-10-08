@@ -1,0 +1,23 @@
+apiVersion: v2
+name: usdt-tracker
+description: >-
+  Read-only TRON USDT (TRC-20) transfer listener with a runtime watch-list API
+  (/v1/addresses), Prometheus metrics and optional bundled PostgreSQL.
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/co-codin/USDT-Tracker
+sources:
+  - https://github.com/co-codin/USDT-Tracker
+keywords: [tron, usdt, trc20, blockchain, listener, payments]
+maintainers:
+  - name: co-codin
+    url: https://github.com/co-codin
+dependencies:
+  # Optional bundled database for demos/small installs. Free Bitnami images are
+  # "latest"-only and intended for non-production use: in production set
+  # postgresql.enabled=false and use externalDatabase (managed Postgres).
+  - name: postgresql
+    version: 18.12.4
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: postgresql.enabled

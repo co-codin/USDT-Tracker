@@ -1,5 +1,6 @@
-// Package decoder turns raw TRON event logs into TRC-20 Transfer events.
-package decoder
+// Package trc20 decodes TRC-20 Transfer events from TRON event logs and
+// provides the TRON implementation of chain.Source.
+package trc20
 
 import (
 	"encoding/hex"
@@ -8,8 +9,8 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
 	"github.com/co-codin/USDT-Tracker/internal/model"
-	"github.com/co-codin/USDT-Tracker/internal/tron"
 )
 
 // TransferTopic is keccak256("Transfer(address,address,uint256)").

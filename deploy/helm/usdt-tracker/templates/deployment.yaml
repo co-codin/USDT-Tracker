@@ -1,0 +1,123 @@
+{{- $dbEnabled := include "usdt-tracker.databaseEnabled" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "usdt-tracker.fullname" . }}
+  labels:
+    {{- include "usdt-tracker.labels" . | nindent 4 }}
+spec:
+  replicas: 1   # single writer; see values.yaml replicaCount
+  strategy:
+    type: Recreate   # never run two listeners at once (duplicate deliveries)
+  selector:
+    matchLabels:
+      {{- include "usdt-tracker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "usdt-tracker.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "usdt-tracker.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: listener
+          image: {{ include "usdt-tracker.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: {{ include "usdt-tracker.secretName" . }}
+                optional: true
+          env:
+            - name: CONFIG_FILE
+              value: /etc/usdt-tracker/config.yaml
+            - name: CURSOR_FILE
+              value: /data/cursor.json
+            - name: HTTP_ADDR
+              value: {{ printf ":%v" .Values.containerPort | quote }}
+            - name: SINK_POSTGRES_ENABLED
+              value: {{ ternary "true" "false" (eq $dbEnabled "true") | quote }}
+            {{- if .Values.postgresql.enabled }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "usdt-tracker.postgresql.secretName" . }}
+                  key: {{ .Values.postgresql.auth.secretKeys.userPasswordKey }}
+            # $(DB_PASSWORD) is expanded by Kubernetes; generated passwords are alphanumeric.
+            - name: DATABASE_URL
+              value: {{ printf "postgres://%s:$(DB_PASSWORD)@%s:5432/%s?sslmode=disable" .Values.postgresql.auth.username (include "usdt-tracker.postgresql.fullname" .) .Values.postgresql.auth.database | quote }}
+            {{- else if .Values.externalDatabase.existingSecret }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalDatabase.existingSecret }}
+                  key: {{ .Values.externalDatabase.existingSecretKey }}
+            {{- end }}
+            {{- range $k, $v := .Values.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/usdt-tracker
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "usdt-tracker.fullname" . }}
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "usdt-tracker.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

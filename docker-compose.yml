@@ -1,5 +1,5 @@
 # Listener + PostgreSQL. Usage:
-#   cp .env.example .env   # optional: API key, Telegram, webhook, filters
+#   cp .env.example .env   # optional: API key, Telegram, webhook, filters, API_TOKEN
 #   docker compose up -d --build
 #   docker compose logs -f listener
 services:
@@ -31,11 +31,13 @@ services:
     environment:
       SINK_POSTGRES_ENABLED: "true"
       DATABASE_URL: postgres://listener:${POSTGRES_PASSWORD:-listener}@postgres:5432/tron?sslmode=disable
+      # Admin API (/v1/addresses) is enabled only when API_TOKEN is set (in .env or the shell).
+      API_TOKEN: ${API_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
     ports:
-      - "127.0.0.1:9090:9090"   # /metrics and /healthz
+      - "127.0.0.1:9090:9090"   # /metrics, /healthz, /v1/addresses (localhost only)
     volumes:
       - listener-data:/data
     stop_grace_period: 40s       # lets the in-flight block finish on SIGTERM

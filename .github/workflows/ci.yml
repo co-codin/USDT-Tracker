@@ -34,3 +34,18 @@ jobs:
           TEST_DATABASE_URL: postgres://listener:listener@localhost:5432/tron_test?sslmode=disable
       - name: build
         run: go build ./cmd/listener
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: helm dependency build
+        run: helm dependency build deploy/helm/usdt-tracker
+      - name: helm lint
+        run: helm lint deploy/helm/usdt-tracker --set secrets.apiToken=0123456789abcdef0123
+      - name: helm template (bundled and external Postgres)
+        run: |
+          helm template ci deploy/helm/usdt-tracker > /dev/null
+          helm template ci deploy/helm/usdt-tracker --set postgresql.enabled=false \
+            --set externalDatabase.url=postgres://u:p@db:5432/tron --set ingress.enabled=true > /dev/null

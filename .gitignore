@@ -16,3 +16,6 @@ config.yaml
 .vscode/
 *.swp
 .DS_Store
+
+# Helm dependencies (fetched by `helm dependency build`)
+deploy/helm/*/charts/

@@ -56,3 +56,27 @@ func TestServerEndpoints(t *testing.T) {
 		t.Fatal("expected error when the port is taken")
 	}
 }
+
+func TestServerHandleMountsExtraRoutes(t *testing.T) {
+	s := New("127.0.0.1:0", nil, func(context.Context) (bool, any) { return true, nil }, slog.New(slog.DiscardHandler))
+	s.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "api:"+r.URL.Path)
+	}))
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = s.Shutdown(ctx)
+	}()
+	resp, err := http.Get("http://" + s.Addr().String() + "/v1/addresses")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || string(b) != "api:/v1/addresses" {
+		t.Fatalf("mounted handler: %d %s", resp.StatusCode, b)
+	}
+}

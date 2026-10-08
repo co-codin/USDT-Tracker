@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain"
 	"github.com/co-codin/USDT-Tracker/internal/cursor"
 	"github.com/co-codin/USDT-Tracker/internal/filter"
 	"github.com/co-codin/USDT-Tracker/internal/model"
 	"github.com/co-codin/USDT-Tracker/internal/retry"
 	"github.com/co-codin/USDT-Tracker/internal/sink"
-	"github.com/co-codin/USDT-Tracker/internal/source"
+	"github.com/co-codin/USDT-Tracker/internal/watch"
 )
 
 // fakeSource serves one transfer per block; failOnce makes the first fetch
@@ -31,7 +32,7 @@ func (f *fakeSource) Head(context.Context) (int64, error) {
 	return f.head, nil
 }
 
-func (f *fakeSource) Block(_ context.Context, n int64) (source.Block, error) {
+func (f *fakeSource) Block(_ context.Context, n int64) (chain.Block, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fetched == nil {
@@ -39,13 +40,13 @@ func (f *fakeSource) Block(_ context.Context, n int64) (source.Block, error) {
 	}
 	f.fetched[n]++
 	if n > f.head {
-		return source.Block{}, errors.New("block not produced yet")
+		return chain.Block{}, errors.New("block not produced yet")
 	}
 	if f.failOnce[n] {
 		delete(f.failOnce, n)
-		return source.Block{}, errors.New("transient")
+		return chain.Block{}, errors.New("transient")
 	}
-	return source.Block{Number: n, Transfers: []model.Transfer{{TxID: "tx", LogIndex: int(n), BlockNumber: n, Amount: big.NewInt(n)}}}, nil
+	return chain.Block{Number: n, Transfers: []model.Transfer{{TxID: "tx", LogIndex: int(n), BlockNumber: n, Amount: big.NewInt(n)}}}, nil
 }
 
 // recorder collects delivered block numbers and stops the run at stopAt.
@@ -176,3 +177,82 @@ func TestFilterIsApplied(t *testing.T) {
 type dispatchFunc func(context.Context, sink.Batch) error
 
 func (f dispatchFunc) Dispatch(ctx context.Context, b sink.Batch) error { return f(ctx, b) }
+
+// refreshingMatcher passes everything through and fails Refresh failFirst times.
+type refreshingMatcher struct {
+	mu        sync.Mutex
+	failFirst int
+	calls     int
+}
+
+func (m *refreshingMatcher) Refresh(context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	if m.failFirst > 0 {
+		m.failFirst--
+		return errors.New("watch list unavailable")
+	}
+	return nil
+}
+
+func (m *refreshingMatcher) Apply(in []model.Transfer) []model.Transfer { return in }
+func (m *refreshingMatcher) MatchesEverything() bool                    { return true }
+
+func TestRefreshCalledPerBlockAndFailureRetriesBlock(t *testing.T) {
+	src := &fakeSource{head: 100}
+	rec := &recorder{stopAt: 1 << 62}
+	m := &refreshingMatcher{failFirst: 2}
+	l := New(fastCfg(), src, m, rec, &cursor.MemoryStore{}, nil, nil)
+	if err := l.Backfill(context.Background(), 10, 15); err != nil {
+		t.Fatal(err)
+	}
+	// Block 10 is retried until the watch list loads; nothing is skipped or duplicated.
+	assertContiguous(t, rec.blocks, 10, 15)
+	if m.calls != 6+2 {
+		t.Fatalf("Refresh calls = %d, want 8 (6 blocks + 2 failures)", m.calls)
+	}
+}
+
+func TestDynamicFilterAddressAddedWhileRunning(t *testing.T) {
+	// Transfers in fakeSource have empty From/To; give block >= 30 a watched recipient.
+	const bob = "TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv"
+	src := &recipientSource{fakeSource: &fakeSource{head: 100}, to: bob}
+	store := watch.NewMemoryStore()
+	dyn, err := filter.NewDynamic(filter.Config{Dynamic: true}, store, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var matched []int64
+	disp := dispatchFunc(func(_ context.Context, b sink.Batch) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(b.Transfers) > 0 {
+			matched = append(matched, b.BlockNumber)
+		}
+		if b.BlockNumber == 24 { // simulate an API call between blocks 24 and 25
+			_, _ = store.AddWatch(context.Background(), watch.Entry{Address: bob, Enabled: true})
+			dyn.Invalidate()
+		}
+		return nil
+	})
+	l := New(fastCfg(), src, dyn, disp, &cursor.MemoryStore{}, nil, nil)
+	if err := l.Backfill(context.Background(), 20, 30); err != nil {
+		t.Fatal(err)
+	}
+	assertContiguous(t, matched, 25, 30)
+}
+
+type recipientSource struct {
+	*fakeSource
+	to string
+}
+
+func (r *recipientSource) Block(ctx context.Context, n int64) (chain.Block, error) {
+	b, err := r.fakeSource.Block(ctx, n)
+	for i := range b.Transfers {
+		b.Transfers[i].To = r.to
+	}
+	return b, err
+}

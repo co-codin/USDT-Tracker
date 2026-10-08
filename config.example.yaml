@@ -37,10 +37,21 @@ filter:
   direction: both        # both | incoming | outgoing (relative to watched addresses)
   min_amount: "0"        # large-transfer threshold in USDT, e.g. "100000"
   mode: any              # any = watched OR large, all = watched AND large
+  # Runtime watch list: with the postgres sink enabled, enabled rows of the
+  # watch_addresses table (managed via the /v1/addresses API) are merged with
+  # watch_addresses above. API writes apply immediately; other DB changes
+  # within reload_interval.
+  reload_interval: 5s
 
 http:
-  addr: ":9090"              # /metrics and /healthz; empty disables
+  addr: ":9090"              # /metrics, /healthz and the admin API (/v1/*); empty disables
   health_stale_after: 2m     # /healthz returns 503 if no progress for this long
+
+api:
+  # Bearer token for the admin API (GET/POST/DELETE /v1/addresses).
+  # Empty = API disabled. Prefer env API_TOKEN; generate with `openssl rand -hex 32` (min 16 chars).
+  # Needs the postgres sink, otherwise the API answers 503.
+  token: ""
 
 sinks:
   stdout:

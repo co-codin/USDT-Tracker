@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain/tron/trontest"
 	"github.com/co-codin/USDT-Tracker/internal/config"
-	"github.com/co-codin/USDT-Tracker/internal/tron/trontest"
 )
 
 func TestVersionAndFlagErrors(t *testing.T) {

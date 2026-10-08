@@ -172,7 +172,7 @@ var ErrBlockNotFound = errors.New("tron: block not found")
 // TransactionInfoByBlockNum returns execution info (incl. event logs) for
 // every transaction in the block. Note: nodes return an empty list both for
 // empty blocks and for blocks they don't have yet; callers must disambiguate
-// (see source.TronSource).
+// (see trc20.Source).
 func (c *Client) TransactionInfoByBlockNum(ctx context.Context, num int64) ([]TransactionInfo, error) {
 	var raw json.RawMessage
 	if err := c.post(ctx, "/wallet/gettransactioninfobyblocknum", map[string]any{"num": num}, &raw); err != nil {

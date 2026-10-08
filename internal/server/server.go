@@ -1,4 +1,5 @@
-// Package server exposes /metrics and /healthz.
+// Package server exposes /metrics and /healthz, plus any extra handlers
+// mounted with Handle (e.g. the admin API under /v1/).
 package server
 
 import (
@@ -18,6 +19,7 @@ type HealthFunc func(ctx context.Context) (healthy bool, detail any)
 // Server is a small HTTP server for operational endpoints.
 type Server struct {
 	srv  *http.Server
+	mux  *http.ServeMux
 	log  *slog.Logger
 	mu   sync.Mutex
 	addr net.Addr
@@ -39,9 +41,13 @@ func New(addr string, metrics http.Handler, health HealthFunc, log *slog.Logger)
 	})
 	return &Server{
 		srv: &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second},
+		mux: mux,
 		log: log,
 	}
 }
+
+// Handle mounts h on pattern (http.ServeMux syntax). Call before Start.
+func (s *Server) Handle(pattern string, h http.Handler) { s.mux.Handle(pattern, h) }
 
 // Start listens in the background. It returns an error if the port is taken.
 func (s *Server) Start() error {

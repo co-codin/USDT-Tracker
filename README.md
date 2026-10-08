@@ -30,6 +30,9 @@ pipeline, compliance monitoring of a set of addresses.
   empty responses (lagging nodes) instead of silently skipping blocks.
 - **Filters** – watch list (incoming / outgoing / both), minimum amount for large-transfer alerts,
   `any` (watched OR large) / `all` (watched AND large) modes, or firehose mode (everything).
+- **Runtime watch list + admin API** – add/remove deposit addresses over HTTP
+  (`/v1/addresses`, bearer token) without a restart; stored in Postgres and merged with the static
+  config list. See [Runtime watch list (admin API)](#runtime-watch-list-admin-api).
 - **Sinks** – stdout (structured JSON via `slog`), webhook (HMAC-SHA256 signed, retries),
   Telegram bot, PostgreSQL (`pgx`, embedded migrations). Required vs best-effort per sink.
 - **Ops** – Prometheus `/metrics`, `/healthz` (503 when stalled), graceful shutdown on
@@ -50,13 +53,13 @@ flowchart LR
 
     subgraph L["tron-usdt-listener"]
         C["tron.Client<br/>rate limit · retries · backoff"]
-        S["source.TronSource"]
-        D["decoder<br/>Transfer log → T-addresses, amount"]
-        F["filter<br/>watch list · min amount"]
+        S["chain/tron/trc20.Source<br/>(implements chain.Source)"]
+        D["trc20 decoder<br/>Transfer log → T-addresses, amount"]
+        F["filter<br/>static + runtime watch list · min amount"]
         P["listener loop<br/>head − confirmations<br/>ordered delivery"]
         X["sink.Dispatcher<br/>per-sink dedupe (tx_id:log_index)"]
         K[("cursor<br/>file | Postgres")]
-        M["/metrics · /healthz"]
+        M["/metrics · /healthz · /v1/addresses"]
     end
 
     H & I & B --> C --> S --> D --> P
@@ -67,6 +70,8 @@ flowchart LR
     X --> T["Telegram bot"]
     X --> G[("PostgreSQL")]
     P -.-> M
+    M -. "add / remove address" .-> G
+    G -. "enabled rows (reload ≤ 5s)" .-> F
 ```
 
 Processing loop:
@@ -80,22 +85,31 @@ Processing loop:
 4. Filter → dispatch to all sinks → persist cursor. If a required sink fails, the same block is
    retried with backoff; nothing moves forward until it succeeds.
 
+Repository layout (chain-specific code lives under `internal/chain/<chain>`, so an Ethereum or
+Solana backend can be added as `internal/chain/eth`, `internal/chain/sol` implementing `chain.Source`):
+
 ```
-cmd/listener/            main: flags, logging, signals, -healthcheck
-internal/app/            composition root (wires everything; used by main and e2e tests)
-internal/config/         YAML + env overrides + validation
-internal/tron/           base58check addresses, read-only HTTP client
-internal/tron/trontest/  in-process mock TRON node for integration tests
-internal/decoder/        TRC-20 Transfer log decoding
-internal/source/         Source interface + TRON implementation
-internal/filter/         watch list / threshold matching
-internal/listener/       block-range loop, confirmations, retries, status
-internal/cursor/         cursor stores (file, memory) + dedupe set
-internal/sink/           Sink interface, dispatcher, stdout, webhook, telegram
-internal/sink/postgres/  pgx store (sink + cursor) with embedded migrations
-internal/metrics/        Prometheus collectors
-internal/server/         /metrics and /healthz
-pkg/webhooksig/          sign/verify helpers you can import in webhook consumers
+cmd/listener/                 main: flags, logging, signals, -healthcheck
+internal/
+  app/                        composition root (wires everything; used by main and e2e tests)
+  chain/                      chain-agnostic Source interface + Block
+    tron/                     TRON: base58check addresses, read-only HTTP client
+      trc20/                  TRC-20 Transfer decoding + chain.Source implementation
+      trontest/               in-process mock TRON node for integration tests
+  config/                     YAML + env overrides + validation
+  cursor/                     cursor stores (file, memory) + dedupe set
+  filter/                     watch list / threshold matching, Dynamic (static + DB) filter
+  listener/                   block-range loop, confirmations, retries, status
+  metrics/                    Prometheus collectors
+  model/                      chain-neutral Transfer + amount helpers
+  retry/                      backoff
+  server/                     /metrics, /healthz; mounts the admin API
+  sink/                       Sink interface, dispatcher, stdout, webhook, telegram
+    postgres/                 pgx store: sink + cursor + watch_addresses, embedded migrations
+  watch/                      runtime watch list: entries, validation, Store, admin API (/v1/addresses)
+pkg/webhooksig/               sign/verify helpers you can import in webhook consumers
+deploy/helm/usdt-tracker/     Helm chart (Kubernetes)
+Dockerfile, docker-compose.yml
 ```
 
 ## Quick start
@@ -103,7 +117,7 @@ pkg/webhooksig/          sign/verify helpers you can import in webhook consumers
 ### Local (Go 1.26+)
 
 ```bash
-git clone https://github.com/co-codin/USDT-Tracker && cd tron-usdt-listener
+git clone https://github.com/co-codin/USDT-Tracker && cd USDT-Tracker
 make build
 ./bin/tron-usdt-listener            # firehose: every USDT transfer as JSON on stdout
 ```
@@ -144,6 +158,60 @@ docker compose exec postgres psql -U listener -d tron \
 
 In compose the Postgres sink is enabled and also stores the cursor (`listener_cursor` table).
 
+### Kubernetes (Helm)
+
+The chart lives in [`deploy/helm/usdt-tracker`](deploy/helm/usdt-tracker). It deploys the app image
+(single replica, `Recreate` strategy – the listener is a single writer), a Service on port `9090`
+(`/metrics`, `/healthz`, `/v1/addresses`), optional Ingress (only `/v1` by default) and
+ServiceMonitor, liveness/readiness probes on `/healthz`, resource requests/limits, and a non-root,
+read-only-root-filesystem pod. By default it also installs PostgreSQL via the Bitnami subchart.
+
+```bash
+# 1. Build and push the image (the chart's default ghcr.io/co-codin/usdt-tracker:latest is a placeholder)
+docker build -t ghcr.io/<you>/usdt-tracker:v0.2.0 . && docker push ghcr.io/<you>/usdt-tracker:v0.2.0
+
+# 2. Install with the bundled Postgres and the admin API enabled
+helm dependency build deploy/helm/usdt-tracker
+helm upgrade --install usdt deploy/helm/usdt-tracker -n usdt --create-namespace \
+  --set image.repository=ghcr.io/<you>/usdt-tracker --set image.tag=v0.2.0 \
+  --set secrets.apiToken="$(openssl rand -hex 32)" \
+  --set secrets.tronApiKey="$TRON_PRO_API_KEY"
+
+# 3. Use it
+kubectl -n usdt port-forward svc/usdt-usdt-tracker 9090:9090 &
+TOKEN=$(kubectl -n usdt get secret usdt-usdt-tracker -o jsonpath='{.data.API_TOKEN}' | base64 -d)
+curl -s localhost:9090/v1/addresses -H "Authorization: Bearer $TOKEN"
+```
+
+**API token and other secrets.** Either pass them as values (`secrets.apiToken`, `secrets.tronApiKey`,
+`secrets.telegramBotToken`, `secrets.webhookSecret`; the chart creates a Secret) or create the Secret
+yourself and reference it – recommended with GitOps / sealed-secrets / external-secrets:
+
+```bash
+kubectl -n usdt create secret generic usdt-secrets \
+  --from-literal=API_TOKEN="$(openssl rand -hex 32)" --from-literal=TRON_PRO_API_KEY=...
+helm upgrade --install usdt deploy/helm/usdt-tracker -n usdt --set secrets.existingSecret=usdt-secrets
+```
+
+Recognised keys: `API_TOKEN`, `TRON_PRO_API_KEY`, `TELEGRAM_BOT_TOKEN`, `WEBHOOK_SECRET`,
+`DATABASE_URL`. No token = admin API disabled. `values.yaml` only contains empty placeholders.
+
+**External Postgres (recommended for production).** Disable the subchart and give a DSN, either inline
+(stored in the chart's Secret) or from an existing Secret:
+
+```bash
+helm upgrade --install usdt deploy/helm/usdt-tracker -n usdt \
+  --set postgresql.enabled=false \
+  --set externalDatabase.existingSecret=usdt-db --set externalDatabase.existingSecretKey=DATABASE_URL
+# or: --set postgresql.enabled=false --set externalDatabase.url='postgres://user:pass@db:5432/tron?sslmode=require'
+```
+
+Non-secret settings (filters, sinks, confirmations…) go under `config:` in values (same schema as
+`config.example.yaml`, rendered into a ConfigMap). Notes: free Bitnami PostgreSQL images are only
+published as `latest` and meant for non-production use, so treat the bundled database as a demo
+default; without any database the cursor is kept in an `emptyDir` (enable `persistence.enabled` or,
+better, use Postgres) and the admin API answers `503`.
+
 ## Configuration
 
 Configuration is read from `config.yaml` (or `-config path` / `CONFIG_FILE`) and then overridden by
@@ -169,7 +237,9 @@ See [`config.example.yaml`](config.example.yaml) for every option with comments.
 | `filter.direction` | `FILTER_DIRECTION` | `both` | `both` \| `incoming` \| `outgoing` |
 | `filter.min_amount` | `FILTER_MIN_AMOUNT` | `0` | Large-transfer threshold in USDT |
 | `filter.mode` | `FILTER_MODE` | `any` | `any` = watched OR large, `all` = AND |
-| `http.addr` | `HTTP_ADDR` | `:9090` | `/metrics`, `/healthz`; empty disables |
+| `filter.reload_interval` | `FILTER_RELOAD_INTERVAL` | `5s` | How often enabled `watch_addresses` rows are re-read (API writes apply immediately) |
+| `http.addr` | `HTTP_ADDR` | `:9090` | `/metrics`, `/healthz`, admin API; empty disables |
+| `api.token` | `API_TOKEN` | – | Bearer token for `/v1/*` (≥ 16 chars); **empty disables the admin API** |
 | `http.health_stale_after` | – | `2m` | `/healthz` → 503 without progress |
 | `sinks.stdout.enabled` | `SINK_STDOUT_ENABLED` | `true` | |
 | `sinks.webhook.enabled` | `SINK_WEBHOOK_ENABLED` | `false` | |
@@ -183,6 +253,67 @@ See [`config.example.yaml`](config.example.yaml) for every option with comments.
 
 Every sink has `best_effort` (Telegram defaults to `true`, others to `false`). A **required** sink
 blocks progress until it succeeds (no data loss); a **best-effort** sink only logs and counts failures.
+
+## Runtime watch list (admin API)
+
+Payment gateways usually create a fresh deposit address per order. Instead of editing
+`filter.watch_addresses` and restarting, add and remove addresses over HTTP while the listener runs.
+
+**Requirements:** the Postgres sink (addresses live in the `watch_addresses` table) and an API token.
+The API is served on the existing ops server (`http.addr`, default `:9090`) under `/v1/`.
+
+```bash
+export API_TOKEN=$(openssl rand -hex 32)       # or api.token in config.yaml
+SINK_POSTGRES_ENABLED=true DATABASE_URL=postgres://... API_TOKEN=$API_TOKEN ./bin/tron-usdt-listener
+```
+
+| Request | Success | Errors |
+|---|---|---|
+| `GET /v1/addresses` | `200 {"addresses":[…],"static_addresses":[…]}` | |
+| `POST /v1/addresses` body `{"address":"T…","label":"order 42","direction":"incoming"}` (`label`, `direction` optional; direction `both` \| `incoming` \| `outgoing`, default `both`) | `201` + the stored row | `400` invalid address/JSON, `409` already watched |
+| `DELETE /v1/addresses/{address}` | `204` | `400` invalid address, `404` not in the runtime list |
+
+Every request needs `Authorization: Bearer <token>` (`401` otherwise). With an empty token the API is
+**disabled** (`404` for every `/v1` path – it is never left open). With a token but the Postgres sink
+disabled the API answers `503` with an explanation; the static config list keeps working as before.
+Addresses must be base58 `T…` addresses with a valid checksum (hex is rejected by the API).
+
+```bash
+H="Authorization: Bearer $API_TOKEN"
+
+# add a deposit address (incoming transfers only)
+curl -s -X POST localhost:9090/v1/addresses -H "$H" -H 'Content-Type: application/json' \
+  -d '{"address":"TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv","label":"order 1001","direction":"incoming"}'
+# {"address":"TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv","label":"order 1001","direction":"incoming",
+#  "enabled":true,"created_at":"2026-10-08T20:41:07.512Z"}
+
+# list (runtime rows + read-only static config addresses)
+curl -s localhost:9090/v1/addresses -H "$H" | jq .
+
+# remove it once the order is paid
+curl -s -X DELETE localhost:9090/v1/addresses/TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv -H "$H" -w '%{http_code}\n'
+# 204
+```
+
+How it works:
+
+- The filter merges the static `filter.watch_addresses` (with `filter.direction`) with the **enabled**
+  rows of `watch_addresses` (each with its own `direction`). If an address is in both with different
+  directions, the union (`both`) applies.
+- An API write invalidates the cached list, so the change applies from the **next processed block**.
+  Rows changed directly in SQL (or by another instance) are picked up within `filter.reload_interval`
+  (default `5s`). Since blocks are processed `confirmations` (default 20 ≈ 60 s) behind head, an
+  address added right before a customer pays is in place long before that block is processed.
+- The list is refreshed before each block; if Postgres cannot be read the block is retried (cursor
+  does not move), so no block is filtered with a list that failed to load.
+- With the API enabled, an **empty** watch list matches nothing (only the `min_amount` rule, if set) –
+  removing the last deposit address never turns the listener into a firehose. Without a token, the
+  legacy rule applies: no static addresses, no DB rows and no `min_amount` → every transfer.
+- To pause an address without deleting it, set `enabled = false` in SQL (no API endpoint for that yet).
+
+**Security:** the token is compared in constant time; request bodies are capped at 4 KB. The API
+has no TLS of its own – keep `:9090` on localhost/private network (docker-compose binds
+`127.0.0.1:9090`) or put it behind a TLS reverse proxy. `/metrics` and `/healthz` stay unauthenticated.
 
 ## Output formats
 
@@ -256,6 +387,9 @@ trc20_transfers(id, tx_id, log_index, block_number, block_time, contract, symbol
                 from_address, to_address, amount_raw NUMERIC(78,0), amount NUMERIC(78,18),
                 reasons TEXT[], created_at, UNIQUE (tx_id, log_index))
 listener_cursor(name PRIMARY KEY, last_block, updated_at)
+watch_addresses(address TEXT PRIMARY KEY  -- base58 T…, label TEXT NULL,
+                direction TEXT DEFAULT 'both' CHECK (both|incoming|outgoing),
+                enabled BOOLEAN DEFAULT true, created_at TIMESTAMPTZ)   -- migration 0002
 ```
 
 ## Metrics & health
@@ -284,12 +418,15 @@ make test-integration TEST_DATABASE_URL='postgres://postgres:test@localhost:5543
 
 - **Unit tests**: base58check / hex ↔ `T…` addresses, Transfer decoding against a real mainnet block
   fixture (values cross-checked with Tronscan), 6-decimal amount formatting, filters, cursor &
-  dedupe, retry/backoff, webhook signing, Telegram formatting, config/env parsing.
+  dedupe, retry/backoff, webhook signing, Telegram formatting, config/env parsing, admin API
+  (auth, validation, CRUD, 503 without Postgres) and the runtime filter merge (an address added to an
+  in-memory store is matched by the running filter without a restart).
 - **End-to-end tests** (`internal/app`) run the real wiring against an in-process mock TRON node
-  (`internal/tron/trontest`) plus mock webhook and Telegram servers: ordered block-range processing,
+  (`internal/chain/tron/trontest`) plus mock webhook and Telegram servers: ordered block-range processing,
   confirmations, 429/5xx retries, lagging-node empty responses, restart from cursor without gaps,
   crash-replay with stable idempotency ids, per-sink dedupe when one sink fails, filters, `/healthz`
-  and `/metrics`, and Postgres as sink + cursor.
+  and `/metrics`, Postgres as sink + cursor, and adding/removing an address through the HTTP API
+  while the listener runs (Postgres tests use a throw-away schema).
 
 ## Design notes & limitations
 
@@ -304,6 +441,9 @@ make test-integration TEST_DATABASE_URL='postgres://postgres:test@localhost:5543
   `tron.rps` around 2–3 – plenty for live following (1 block / 3 s) and slow catch-up. For long
   backfills use an API key or your own node (`TRON_API_URL=http://your-node:8090`).
 - Only the `Transfer` event is decoded (not `Approval`, mint/burn helpers like `Issue`/`Redeem`).
+- The runtime watch list is loaded fully into memory on each reload (one indexed query every
+  `reload_interval`); fine for tens of thousands of addresses. Adding an address does not backfill
+  past blocks – use `-from/-to` if a payment may already have happened.
 
 ## 中文简介
 
@@ -314,6 +454,12 @@ Webhook、Telegram 机器人以及 PostgreSQL。游标持久化（文件或 Post
 支持确认数、按 `tx_id + log_index` 去重、指数退避重试和 429 限流处理，并提供 Prometheus
 `/metrics` 与 `/healthz`。不需要也不会接触任何私钥，从不发送交易。快速开始：`make build && ./bin/tron-usdt-listener`
 或 `docker compose up -d --build`。
+
+**运行时地址管理（v1 API）：** 启用 Postgres sink 并设置 `API_TOKEN` 后，可以通过
+`GET/POST/DELETE /v1/addresses`（`Authorization: Bearer <token>`）在运行中增删监听地址，无需重启；
+地址存在 `watch_addresses` 表中，与配置文件里的静态地址合并生效。未设置 token 时 API 关闭；
+未启用 Postgres 时 API 返回 503，静态配置照常工作。Kubernetes 部署见 `deploy/helm/usdt-tracker`
+（Helm chart，可内置 PostgreSQL 或连接外部数据库，token 通过 Secret 注入）。
 
 ## Кратко на русском
 
@@ -326,6 +472,13 @@ TRON. Он обходит блоки по диапазонам, декодиру
 задержкой и обработка 429, метрики Prometheus и `/healthz`. Приватные ключи не используются,
 транзакции не отправляются. Быстрый старт: `make build && ./bin/tron-usdt-listener` или
 `docker compose up -d --build`.
+
+**Адреса во время работы (API v1):** при включённом Postgres-синке и заданном `API_TOKEN` адреса
+можно добавлять и удалять без перезапуска через `GET/POST/DELETE /v1/addresses`
+(`Authorization: Bearer <token>`); они хранятся в таблице `watch_addresses` и объединяются со
+статическим списком из конфига. Без токена API выключен; без Postgres API отвечает 503, а
+статический список работает как раньше. Для Kubernetes есть Helm-чарт `deploy/helm/usdt-tracker`
+(встроенный или внешний PostgreSQL, токен через Secret).
 
 ## License
 

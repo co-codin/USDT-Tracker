@@ -23,10 +23,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/co-codin/USDT-Tracker/internal/app"
+	"github.com/co-codin/USDT-Tracker/internal/chain/tron/trontest"
 	"github.com/co-codin/USDT-Tracker/internal/config"
 	"github.com/co-codin/USDT-Tracker/internal/retry"
 	"github.com/co-codin/USDT-Tracker/internal/sink"
-	"github.com/co-codin/USDT-Tracker/internal/tron/trontest"
 	"github.com/co-codin/USDT-Tracker/pkg/webhooksig"
 )
 

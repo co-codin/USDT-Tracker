@@ -35,7 +35,7 @@ cover: ## Tests with per-package coverage + HTML report (coverage.html)
 	go tool cover -html=coverage.out -o coverage.html
 
 test-integration: ## Postgres tests: make test-integration TEST_DATABASE_URL=postgres://...
-	TEST_DATABASE_URL=$(TEST_DATABASE_URL) go test -race -count=1 -run 'Integration|Postgres' -v ./internal/sink/postgres/ ./internal/app/
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) go test -race -count=1 -run 'Integration|Postgres|AdminAPI' -v ./internal/sink/postgres/ ./internal/app/
 
 vet: ## go vet
 	go vet ./...

@@ -14,8 +14,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
 	"github.com/co-codin/USDT-Tracker/internal/model"
-	"github.com/co-codin/USDT-Tracker/internal/tron"
 )
 
 // USDTContract is the USDT TRC-20 contract on TRON mainnet.
@@ -46,7 +46,16 @@ type Config struct {
 	Cursor   Cursor   `yaml:"cursor"`
 	Filter   Filter   `yaml:"filter"`
 	HTTP     HTTP     `yaml:"http"`
+	API      API      `yaml:"api"`
 	Sinks    Sinks    `yaml:"sinks"`
+}
+
+// MinAPITokenLen is the minimum accepted admin API token length.
+const MinAPITokenLen = 16
+
+// API configures the admin API served on http.addr under /v1/.
+type API struct {
+	Token string `yaml:"token"` // bearer token; empty disables the API
 }
 
 // Log configures application logging (stderr).
@@ -93,6 +102,9 @@ type Filter struct {
 	Direction      string   `yaml:"direction"` // both|incoming|outgoing
 	MinAmount      string   `yaml:"min_amount"`
 	Mode           string   `yaml:"mode"` // any|all
+	// ReloadInterval is how often enabled rows of the Postgres
+	// watch_addresses table are re-read (API writes apply immediately).
+	ReloadInterval Duration `yaml:"reload_interval"`
 }
 
 // HTTP configures the ops server.
@@ -157,7 +169,7 @@ func Default() Config {
 			DedupeCacheSize: 100_000, DispatchTimeout: Duration(30 * time.Second),
 		},
 		Cursor: Cursor{File: "./data/cursor.json"},
-		Filter: Filter{Direction: "both", Mode: "any"},
+		Filter: Filter{Direction: "both", Mode: "any", ReloadInterval: Duration(5 * time.Second)},
 		HTTP:   HTTP{Addr: ":9090", StaleAfter: Duration(2 * time.Minute)},
 		Sinks: Sinks{
 			Stdout:   StdoutSink{Enabled: true},
@@ -230,6 +242,20 @@ func (c *Config) Validate() error {
 	case "any", "all":
 	default:
 		add("filter.mode must be any|all, got %q", c.Filter.Mode)
+	}
+	if c.Filter.ReloadInterval.D() < 100*time.Millisecond || c.Filter.ReloadInterval.D() > time.Hour {
+		add("filter.reload_interval must be between 100ms and 1h, got %s", c.Filter.ReloadInterval.D())
+	}
+	if c.API.Token != "" {
+		if len(c.API.Token) < MinAPITokenLen {
+			add("api.token (API_TOKEN) must be at least %d characters, e.g. `openssl rand -hex 32`", MinAPITokenLen)
+		}
+		if strings.ContainsAny(c.API.Token, " \t\r\n") {
+			add("api.token (API_TOKEN) must not contain whitespace")
+		}
+		if c.HTTP.Addr == "" {
+			add("api.token is set but http.addr is empty: the admin API is served on http.addr")
+		}
 	}
 	if _, err := c.MinAmount(); err != nil {
 		add("filter.min_amount: %v", err)
@@ -345,7 +371,9 @@ var envBindings = []envBinding{
 	{"FILTER_DIRECTION", str(func(c *Config) *string { return &c.Filter.Direction })},
 	{"FILTER_MIN_AMOUNT", str(func(c *Config) *string { return &c.Filter.MinAmount })},
 	{"FILTER_MODE", str(func(c *Config) *string { return &c.Filter.Mode })},
+	{"FILTER_RELOAD_INTERVAL", duration(func(c *Config) *Duration { return &c.Filter.ReloadInterval })},
 	{"HTTP_ADDR", str(func(c *Config) *string { return &c.HTTP.Addr })},
+	{"API_TOKEN", str(func(c *Config) *string { return &c.API.Token })},
 	{"SINK_STDOUT_ENABLED", boolean(func(c *Config) *bool { return &c.Sinks.Stdout.Enabled })},
 	{"SINK_WEBHOOK_ENABLED", boolean(func(c *Config) *bool { return &c.Sinks.Webhook.Enabled })},
 	{"WEBHOOK_URL", str(func(c *Config) *string { return &c.Sinks.Webhook.URL })},

@@ -1,4 +1,4 @@
-package decoder
+package trc20
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/co-codin/USDT-Tracker/internal/tron"
+	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
 )
 
 func usdtDecoder(t *testing.T) *Decoder {

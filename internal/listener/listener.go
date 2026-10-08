@@ -18,12 +18,12 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain"
 	"github.com/co-codin/USDT-Tracker/internal/cursor"
-	"github.com/co-codin/USDT-Tracker/internal/filter"
 	"github.com/co-codin/USDT-Tracker/internal/metrics"
+	"github.com/co-codin/USDT-Tracker/internal/model"
 	"github.com/co-codin/USDT-Tracker/internal/retry"
 	"github.com/co-codin/USDT-Tracker/internal/sink"
-	"github.com/co-codin/USDT-Tracker/internal/source"
 )
 
 // Config tunes the processing loop.
@@ -55,6 +55,20 @@ func (c *Config) defaults() {
 	}
 }
 
+// Matcher selects the transfers to deliver (*filter.Filter or *filter.Dynamic).
+type Matcher interface {
+	Apply(in []model.Transfer) []model.Transfer
+	MatchesEverything() bool
+}
+
+// Refresher is implemented by matchers whose rules change at runtime. Refresh
+// is called before every block; an error fails the block (it is retried and
+// the cursor does not advance), so no block is filtered with a watch list
+// that could not be reloaded.
+type Refresher interface {
+	Refresh(ctx context.Context) error
+}
+
 // Dispatcher delivers a batch to sinks.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, b sink.Batch) error
@@ -74,8 +88,8 @@ type Status struct {
 // Listener is the main processing loop.
 type Listener struct {
 	cfg    Config
-	src    source.Source
-	filter *filter.Filter
+	src    chain.Source
+	filter Matcher
 	disp   Dispatcher
 	store  cursor.Store
 	m      *metrics.Metrics
@@ -86,7 +100,7 @@ type Listener struct {
 }
 
 // New creates a listener. m may be nil.
-func New(cfg Config, src source.Source, f *filter.Filter, d Dispatcher, store cursor.Store, m *metrics.Metrics, log *slog.Logger) *Listener {
+func New(cfg Config, src chain.Source, f Matcher, d Dispatcher, store cursor.Store, m *metrics.Metrics, log *slog.Logger) *Listener {
 	cfg.defaults()
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -206,9 +220,9 @@ func (l *Listener) loop(ctx context.Context, next, end int64, persist bool) erro
 
 // fetchRange fetches [from, to] concurrently and returns the longest
 // contiguous prefix that succeeded, plus the first error (if any).
-func (l *Listener) fetchRange(ctx context.Context, from, to int64) ([]source.Block, error) {
+func (l *Listener) fetchRange(ctx context.Context, from, to int64) ([]chain.Block, error) {
 	n := int(to - from + 1)
-	blocks := make([]source.Block, n)
+	blocks := make([]chain.Block, n)
 	errs := make([]error, n)
 	var g errgroup.Group
 	g.SetLimit(l.cfg.Concurrency)
@@ -231,7 +245,12 @@ func (l *Listener) fetchRange(ctx context.Context, from, to int64) ([]source.Blo
 // process filters and delivers one block, then persists the cursor. Delivery
 // is retried until all required sinks succeed; on shutdown an in-flight block
 // is allowed to finish (bounded by DispatchTimeout).
-func (l *Listener) process(ctx context.Context, b source.Block, persist bool) error {
+func (l *Listener) process(ctx context.Context, b chain.Block, persist bool) error {
+	if r, ok := l.filter.(Refresher); ok {
+		if err := r.Refresh(ctx); err != nil {
+			return fmt.Errorf("block %d: %w", b.Number, err)
+		}
+	}
 	matched := l.filter.Apply(b.Transfers)
 	if l.m != nil {
 		l.m.TransfersDecoded.Add(float64(len(b.Transfers)))
