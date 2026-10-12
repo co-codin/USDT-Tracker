@@ -28,6 +28,7 @@ import (
 	"github.com/co-codin/USDT-Tracker/internal/chainaddr"
 	"github.com/co-codin/USDT-Tracker/internal/config"
 	"github.com/co-codin/USDT-Tracker/internal/cursor"
+	"github.com/co-codin/USDT-Tracker/internal/export"
 	"github.com/co-codin/USDT-Tracker/internal/filter"
 	"github.com/co-codin/USDT-Tracker/internal/listener"
 	"github.com/co-codin/USDT-Tracker/internal/metrics"
@@ -169,6 +170,11 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		if pg != nil {
 			ws = pg.Watchlist()
 		}
+		var es export.Source // nil interface when Postgres is off → 503
+		if pg != nil {
+			es = pg
+		}
+		a.srv.Handle("/v1/export.csv", export.NewHandler(cfg.API.Token, es, log.With("component", "export")))
 		a.srv.Handle("/v1/", watch.NewAPI(watch.APIConfig{
 			Token: cfg.API.Token, Store: ws, Static: staticAddresses(cfg, chains), Chains: chains,
 			OnChange: func() {

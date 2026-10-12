@@ -33,6 +33,9 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "export" {
+		return runExport(args[1:], stdout, stderr)
+	}
 	fs := flag.NewFlagSet("tron-usdt-listener", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (

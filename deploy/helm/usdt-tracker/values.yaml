@@ -91,7 +91,7 @@ secrets:
   # WEBHOOK_SECRET, DATABASE_URL.
   existingSecret: ""
   # Values below are only used when existingSecret is empty. Leave empty here.
-  apiToken: ""             # admin API bearer token (>= 16 chars); empty = API disabled
+  apiToken: ""             # admin API bearer token (>= 16 chars); also guards /v1/export.csv; empty = API disabled
   tronApiKey: ""           # TronGrid TRON-PRO-API-KEY
   toncenterApiKey: ""      # toncenter API key (X-API-Key); strongly recommended when config.chains has ton
   ethRpcUrl: ""            # Ethereum JSON-RPC URL (often embeds a provider key); empty = public node

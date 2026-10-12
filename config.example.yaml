@@ -96,6 +96,7 @@ http:
 
 api:
   # Bearer token for the admin API (GET/POST/DELETE /v1/addresses).
+  # Also protects GET /v1/export.csv (per-address CSV statement).
   # Empty = API disabled. Prefer env API_TOKEN; generate with `openssl rand -hex 32` (min 16 chars).
   # Needs the postgres sink, otherwise the API answers 503.
   token: ""

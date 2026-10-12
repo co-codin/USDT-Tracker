@@ -98,6 +98,14 @@ func TestE2E_PostgresETHRuntimeWatch(t *testing.T) {
 	}
 	node.Head.Store(40)
 	waitChain(t, a.Listener, 38)
+	code, csvBody := apiCall(t, a, "GET", "/v1/export.csv?address="+eth.Checksum(ethtest.Bob)+"&from=2000-01-01", apiToken, "")
+	if code != http.StatusOK || !strings.HasPrefix(csvBody, "time_utc,chain,tx_id") || !strings.Contains(csvBody, ",eth,0x") ||
+		!strings.Contains(csvBody, ",in,") || !strings.Contains(csvBody, "https://etherscan.io/tx/0x") {
+		t.Fatalf("export: %d %.300s", code, csvBody)
+	}
+	if code, _ := apiCall(t, a, "GET", "/v1/export.csv?address="+ethtest.Bob, "", ""); code != http.StatusUnauthorized {
+		t.Fatalf("export without token: %d", code)
+	}
 	stop()
 	var cur int64
 	if err := pool.QueryRow(ctx, `SELECT last_block FROM listener_cursor WHERE name='main:eth'`).Scan(&cur); err != nil || cur < 38 {

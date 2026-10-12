@@ -120,3 +120,15 @@ func TestBackfillTONAgainstMockIndex(t *testing.T) {
 		t.Fatalf("line %v %v", first, err)
 	}
 }
+
+func TestExportSubcommandValidation(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run([]string{"export"}, &out, &errb); code != 2 || !strings.Contains(errb.String(), "address is required") {
+		t.Fatalf("%d %s", code, errb.String())
+	}
+	errb.Reset()
+	t.Setenv("DATABASE_URL", "")
+	if code := run([]string{"export", "-address", "TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv"}, &out, &errb); code != 2 || !strings.Contains(errb.String(), "DATABASE_URL") {
+		t.Fatalf("%d %s", code, errb.String())
+	}
+}

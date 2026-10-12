@@ -370,6 +370,43 @@ How it works:
 has no TLS of its own – keep `:9090` on localhost/private network (docker-compose binds
 `127.0.0.1:9090`) or put it behind a TLS reverse proxy. `/metrics` and `/healthz` stay unauthenticated.
 
+## CSV / accounting export
+
+A per-address statement for bookkeeping (freelancers, small teams, accountants), streamed straight
+from the Postgres `trc20_transfers` table – constant memory, any size:
+
+```bash
+# HTTP (same bearer token as the admin API; needs the postgres sink)
+curl -H "Authorization: Bearer $API_TOKEN" -o october.csv \
+  "http://localhost:9090/v1/export.csv?address=TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv&from=2026-10-01&to=2026-10-31"
+
+# CLI (reads DATABASE_URL / config; no running listener needed)
+./bin/tron-usdt-listener export -address 0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed \
+  -from 2026-10-01 -to 2026-10-31 -o october.csv
+```
+
+| Parameter | |
+|---|---|
+| `address` | required; TRON `T…`, TON `EQ…`/`UQ…`/`0:<hex>` or Ethereum `0x…` |
+| `chain` | `tron` / `ton` / `eth`; detected from the address when omitted |
+| `from` | inclusive, `YYYY-MM-DD` or RFC 3339 (UTC) |
+| `to` | `YYYY-MM-DD` includes that whole day; an RFC 3339 timestamp is exclusive |
+
+```csv
+time_utc,chain,tx_id,log_index,from,to,direction,amount,symbol,memo,explorer_url
+2026-10-01T12:00:00Z,eth,0x3971…500e,5,0xfB69…d359,0x5aAe…eAed,in,1250.5,USDT,,https://etherscan.io/tx/0x3971…500e
+```
+
+- `direction` is relative to `address`: `in`, `out` or `self`. Amounts are exact decimals (no float
+  rounding). Addresses use the explorer form (TON `UQ…`, Ethereum EIP-55).
+- RFC 4180 quoting (commas, quotes, newlines in memos). Memos starting with `= + - @` are prefixed
+  with `'` to prevent spreadsheet formula injection.
+- **Only stored transfers are exported**: the Postgres sink stores what the filter matched, so add the
+  address to the watch list (static config or `/v1/addresses`) before you need its statement, and use
+  `-from/-to` backfill for history. Migration `0005` adds `(chain, address, block_time)` indexes.
+- `401` without/with a wrong token, `400` for bad parameters, `503` when the postgres sink is off,
+  `404` when `API_TOKEN` is not set.
+
 ## TON (USD₮ jetton)
 
 Enable with `CHAINS=ton` (TON only) or `CHAINS=tron,ton` (both, concurrently):
@@ -670,6 +707,12 @@ TON 地址写在 `ton.watch_addresses` / `TON_WATCH_ADDRESSES`，也可以通过
 合并成一条），429 自动等待重试，队列有上限，不会拖慢监听。可用 `LARGE_ALERTS_FOOTER` 加项目链接做曝光。
 机器人需要是频道管理员。
 
+**CSV / 会计导出：** `GET /v1/export.csv?address=&chain=&from=&to=`（和管理 API 同一个 Bearer
+`API_TOKEN`）或命令行 `tron-usdt-listener export -address … -from 2026-10-01 -to 2026-10-31 -o out.csv`，
+从 Postgres 流式导出某个地址的 USDT 流水：时间(UTC)、链、交易哈希、from/to、相对该地址的方向
+(in/out/self)、金额、备注、浏览器链接。标准 CSV 转义并防止表格公式注入。只能导出已入库的转账，
+所以要先把地址加入监听列表。
+
 ## Кратко на русском
 
 **tron-usdt-listener** — **read-only** сервис на Go для отслеживания переводов USDT (TRC-20) в сети
@@ -702,6 +745,12 @@ TRON. Он обходит блоки по диапазонам, декодиру
 публикуется в Telegram-канал независимо от списка адресов, со ссылками на tronscan / tonviewer / etherscan.
 Скорость ограничена под лимиты Telegram (по умолчанию не чаще раза в 3 с, всплески объединяются в одно
 сообщение), 429 обрабатывается, очередь ограничена. Бот должен быть администратором канала.
+
+**CSV-выгрузка для бухгалтерии:** `GET /v1/export.csv?address=&chain=&from=&to=` (тот же Bearer
+`API_TOKEN`) или CLI `tron-usdt-listener export -address … -from … -to … -o out.csv` — потоковая выписка
+по адресу из Postgres: время (UTC), сеть, хеш, from/to, направление (in/out/self), сумма, memo, ссылка
+на эксплорер. Экранирование по RFC 4180 и защита от формул в таблицах. Выгружаются только сохранённые
+переводы — адрес нужно заранее добавить в список отслеживания.
 
 **Адреса во время работы (API v1):** при включённом Postgres-синке и заданном `API_TOKEN` адреса
 можно добавлять и удалять без перезапуска через `GET/POST/DELETE /v1/addresses`
