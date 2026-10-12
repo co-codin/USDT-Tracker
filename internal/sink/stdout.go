@@ -21,8 +21,9 @@ func (s *Stdout) Name() string { return "stdout" }
 // Send implements Sink.
 func (s *Stdout) Send(ctx context.Context, b Batch) error {
 	for _, t := range b.Transfers {
-		s.log.LogAttrs(ctx, slog.LevelInfo, "transfer",
+		attrs := []slog.Attr{
 			slog.String("id", t.Key()),
+			slog.String("chain", t.ChainName()),
 			slog.String("tx_id", t.TxID),
 			slog.Int("log_index", t.LogIndex),
 			slog.Int64("block", t.BlockNumber),
@@ -33,7 +34,11 @@ func (s *Stdout) Send(ctx context.Context, b Batch) error {
 			slog.String("amount", t.AmountDecimal()),
 			slog.String("amount_raw", t.Amount.String()),
 			slog.String("reasons", strings.Join(t.Reasons, ",")),
-		)
+		}
+		if t.Memo != "" {
+			attrs = append(attrs, slog.String("memo", t.Memo))
+		}
+		s.log.LogAttrs(ctx, slog.LevelInfo, "transfer", attrs...)
 	}
 	return nil
 }

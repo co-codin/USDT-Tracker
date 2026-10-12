@@ -34,6 +34,15 @@ config:
   log:
     level: info
     format: json
+  # tron (default), ton, or both: [tron, ton]. Each chain has its own cursor.
+  chains: [tron]
+  ton:
+    api_url: https://toncenter.com/api/v3
+    rps: 1                 # ~9 with secrets.toncenterApiKey (free key from @tonapibot)
+    jetton_master: EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs   # official USD₮
+    confirmations: 3
+    start_block: 0
+    watch_addresses: []    # static TON addresses (EQ…/UQ…/0:<hex>); runtime ones via the API
   tron:
     api_url: https://api.trongrid.io
     rps: 3
@@ -62,12 +71,13 @@ extraEnv: {}
 # --- Secrets ------------------------------------------------------------------
 secrets:
   # Use an existing Secret instead of creating one. Recognised keys (all
-  # optional): API_TOKEN, TRON_PRO_API_KEY, TELEGRAM_BOT_TOKEN, WEBHOOK_SECRET,
-  # DATABASE_URL.
+  # optional): API_TOKEN, TRON_PRO_API_KEY, TONCENTER_API_KEY, TELEGRAM_BOT_TOKEN,
+  # WEBHOOK_SECRET, DATABASE_URL.
   existingSecret: ""
   # Values below are only used when existingSecret is empty. Leave empty here.
   apiToken: ""             # admin API bearer token (>= 16 chars); empty = API disabled
   tronApiKey: ""           # TronGrid TRON-PRO-API-KEY
+  toncenterApiKey: ""      # toncenter API key (X-API-Key); strongly recommended when config.chains has ton
   telegramBotToken: ""
   webhookSecret: ""        # HMAC-SHA256 signing key for the webhook sink
 
@@ -127,7 +137,7 @@ serviceMonitor:
 
 # --- Probes -------------------------------------------------------------------
 # /healthz returns 503 when no block was processed for http.health_stale_after
-# (2m), e.g. TRON node or DB unreachable. Liveness is lenient so a remote
+# (2m) on any enabled chain, e.g. TRON node / toncenter or DB unreachable. Liveness is lenient so a remote
 # outage does not cause a restart storm.
 livenessProbe:
   httpGet: {path: /healthz, port: http}

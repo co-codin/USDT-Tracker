@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain/ton/tontest"
 	"github.com/co-codin/USDT-Tracker/internal/chain/tron/trontest"
 	"github.com/co-codin/USDT-Tracker/internal/config"
 )
@@ -19,6 +20,9 @@ func TestVersionAndFlagErrors(t *testing.T) {
 	}
 	if code := run([]string{"-to", "5"}, &out, &errb); code != 2 {
 		t.Fatalf("-to without -from: code=%d", code)
+	}
+	if code := run([]string{"-chain", "ton"}, &out, &errb); code != 2 {
+		t.Fatalf("-chain without -from: code=%d", code)
 	}
 	if code := run([]string{"-nope"}, &out, &errb); code != 2 {
 		t.Fatalf("unknown flag: code=%d", code)
@@ -87,5 +91,32 @@ func TestNewLoggerLevels(t *testing.T) {
 	newLogger(config.Log{Level: "bogus", Format: "text"}, &b).Info("shown")
 	if strings.Contains(b.String(), "hidden") || !strings.Contains(b.String(), "shown") {
 		t.Fatalf("unexpected log output %q", b.String())
+	}
+}
+
+func TestBackfillTONAgainstMockIndex(t *testing.T) {
+	srv := tontest.New(60)
+	defer srv.Close()
+	node := trontest.NewServer(100)
+	defer node.Close()
+	t.Setenv("CHAINS", "tron,ton")
+	t.Setenv("TRON_API_URL", node.URL)
+	t.Setenv("TON_API_URL", srv.BaseURL())
+	t.Setenv("TON_RPS", "1000")
+	var out, errb bytes.Buffer
+	if code := run([]string{"-config", "", "-from", "30", "-to", "45"}, &out, &errb); code != 1 || !strings.Contains(errb.String(), "-chain") {
+		t.Fatalf("ambiguous backfill: code=%d stderr=%s", code, errb.String())
+	}
+	out.Reset()
+	if code := run([]string{"-config", "", "-chain", "ton", "-from", "30", "-to", "45"}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, errb.String())
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if want := len(srv.Expected(30, 45)); len(lines) != want || want == 0 {
+		t.Fatalf("got %d lines, want %d:\n%s", len(lines), want, out.String())
+	}
+	var first map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil || first["chain"] != "ton" {
+		t.Fatalf("line %v %v", first, err)
 	}
 }

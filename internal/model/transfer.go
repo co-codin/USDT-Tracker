@@ -17,24 +17,46 @@ const (
 	ReasonLarge    = "large_transfer"
 )
 
-// Transfer is a decoded TRC-20 Transfer(address,address,uint256) event.
+// Supported chains.
+const (
+	ChainTron = "tron"
+	ChainTON  = "ton"
+)
+
+// Transfer is a decoded token transfer: a TRC-20 Transfer(address,address,uint256)
+// event on TRON or a jetton transfer on TON.
 type Transfer struct {
+	Chain       string    // "tron" (default when empty) or "ton"
 	TxID        string    // transaction hash (hex, no 0x)
 	LogIndex    int       // position of the log inside the transaction's log list
 	BlockNumber int64     // block height
 	BlockTime   time.Time // block timestamp (UTC)
-	Contract    string    // token contract, base58check (T...)
+	Contract    string    // token contract: base58check (T...) on TRON, jetton master raw address on TON
 	Symbol      string    // token symbol, e.g. USDT
 	Decimals    int       // token decimals, 6 for USDT
-	From        string    // sender, base58check
-	To          string    // recipient, base58check
+	From        string    // sender: base58check on TRON, raw "0:<hex>" owner address on TON
+	To          string    // recipient (same formats as From)
 	Amount      *big.Int  // raw amount in base units
+	Memo        string    // TON only: text comment of the transfer (forward payload), often an invoice id
 	Reasons     []string  // why the filter matched (set by filter.Filter)
 }
 
-// Key is the idempotency / dedupe key of a transfer: "<tx_id>:<log_index>".
+// ChainName returns the chain, defaulting to "tron".
+func (t Transfer) ChainName() string {
+	if t.Chain == "" {
+		return ChainTron
+	}
+	return t.Chain
+}
+
+// Key is the idempotency / dedupe key of a transfer: "<tx_id>:<log_index>"
+// on TRON (unchanged for compatibility) and "ton:<tx_hash>:<index>" on TON.
 func (t Transfer) Key() string {
-	return t.TxID + ":" + strconv.Itoa(t.LogIndex)
+	k := t.TxID + ":" + strconv.Itoa(t.LogIndex)
+	if c := t.ChainName(); c != ChainTron {
+		k = c + ":" + k
+	}
+	return k
 }
 
 // AmountDecimal returns the human readable amount, e.g. "1250.5".
@@ -54,6 +76,7 @@ func (t Transfer) HasReason(r string) bool {
 
 type transferJSON struct {
 	ID          string    `json:"id"`
+	Chain       string    `json:"chain"`
 	TxID        string    `json:"tx_id"`
 	LogIndex    int       `json:"log_index"`
 	BlockNumber int64     `json:"block_number"`
@@ -65,6 +88,7 @@ type transferJSON struct {
 	To          string    `json:"to"`
 	Amount      string    `json:"amount"`
 	AmountRaw   string    `json:"amount_raw"`
+	Memo        string    `json:"memo,omitempty"`
 	Reasons     []string  `json:"reasons,omitempty"`
 }
 
@@ -76,6 +100,7 @@ func (t Transfer) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(transferJSON{
 		ID:          t.Key(),
+		Chain:       t.ChainName(),
 		TxID:        t.TxID,
 		LogIndex:    t.LogIndex,
 		BlockNumber: t.BlockNumber,
@@ -87,6 +112,7 @@ func (t Transfer) MarshalJSON() ([]byte, error) {
 		To:          t.To,
 		Amount:      t.AmountDecimal(),
 		AmountRaw:   raw,
+		Memo:        t.Memo,
 		Reasons:     t.Reasons,
 	})
 }
@@ -102,6 +128,7 @@ func (t *Transfer) UnmarshalJSON(b []byte) error {
 		return fmt.Errorf("invalid amount_raw %q", j.AmountRaw)
 	}
 	*t = Transfer{
+		Chain: j.Chain, Memo: j.Memo,
 		TxID: j.TxID, LogIndex: j.LogIndex, BlockNumber: j.BlockNumber, BlockTime: j.BlockTime,
 		Contract: j.Contract, Symbol: j.Symbol, Decimals: j.Decimals, From: j.From, To: j.To,
 		Amount: amt, Reasons: j.Reasons,

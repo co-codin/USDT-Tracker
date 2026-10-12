@@ -2,9 +2,11 @@ package watch
 
 // Admin HTTP API for the runtime watch list:
 //
-//	GET    /v1/addresses            list runtime (and static) watch addresses
-//	POST   /v1/addresses            add {address, label?, direction?}
-//	DELETE /v1/addresses/{address}  remove a runtime address
+//	GET    /v1/addresses[?chain=ton]  list runtime (and static) watch addresses
+//	POST   /v1/addresses              add {address, chain?, label?, direction?}
+//	DELETE /v1/addresses/{address}    remove a runtime address
+//
+// chain is "tron" or "ton"; when omitted it is detected from the address.
 //
 // Every request needs "Authorization: Bearer <API_TOKEN>". With an empty
 // token the API is disabled (404 for every /v1 path); without a store
@@ -30,6 +32,8 @@ type APIConfig struct {
 	Token  string   // bearer token; empty disables the API
 	Store  Store    // nil = Postgres disabled (503)
 	Static []string // static config addresses, reported read-only by GET
+	// Chains, when non-empty, restricts POST to these chains (the enabled ones).
+	Chains []string
 	// OnChange is called after a successful add/delete (e.g. to invalidate
 	// the filter's cached watch list). May be nil.
 	OnChange func()
@@ -110,6 +114,19 @@ func (h *API) list(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, "list", err)
 		return
 	}
+	if c := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("chain"))); c != "" {
+		if c != ChainTron && c != ChainTON {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown chain %q (want tron|ton)", c))
+			return
+		}
+		kept := make([]Entry, 0, len(rows))
+		for _, e := range rows {
+			if e.Chain == c {
+				kept = append(kept, e)
+			}
+		}
+		rows = kept
+	}
 	if rows == nil {
 		rows = []Entry{}
 	}
@@ -121,6 +138,7 @@ func (h *API) list(w http.ResponseWriter, r *http.Request) {
 }
 
 type addRequest struct {
+	Chain     string  `json:"chain"`
 	Address   string  `json:"address"`
 	Label     *string `json:"label"`
 	Direction string  `json:"direction"`
@@ -142,9 +160,13 @@ func (h *API) add(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "address is required")
 		return
 	}
-	addr, err := NormalizeAddress(req.Address)
+	chain, addr, err := NormalizeChainAddress(req.Chain, req.Address)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("address %q: %v", req.Address, err))
+		return
+	}
+	if !h.chainEnabled(chain) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("chain %q is not enabled on this listener (enabled: %s)", chain, strings.Join(h.cfg.Chains, ",")))
 		return
 	}
 	dir, err := NormalizeDirection(req.Direction)
@@ -157,7 +179,7 @@ func (h *API) add(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	e, err := h.cfg.Store.AddWatch(r.Context(), Entry{Address: addr, Label: label, Direction: dir, Enabled: true})
+	e, err := h.cfg.Store.AddWatch(r.Context(), Entry{Chain: chain, Address: addr, Label: label, Direction: dir, Enabled: true})
 	if errors.Is(err, ErrExists) {
 		writeError(w, http.StatusConflict, "address already watched: "+addr)
 		return
@@ -167,13 +189,13 @@ func (h *API) add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.cfg.OnChange()
-	h.cfg.Log.Info("watch address added", "address", addr, "direction", dir)
+	h.cfg.Log.Info("watch address added", "chain", chain, "address", addr, "direction", dir)
 	writeJSON(w, http.StatusCreated, e)
 }
 
 func (h *API) remove(w http.ResponseWriter, r *http.Request) {
 	raw := r.PathValue("address")
-	addr, err := NormalizeAddress(raw)
+	_, addr, err := NormalizeChainAddress("", raw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("address %q: %v", raw, err))
 		return
@@ -190,6 +212,18 @@ func (h *API) remove(w http.ResponseWriter, r *http.Request) {
 	h.cfg.OnChange()
 	h.cfg.Log.Info("watch address removed", "address", addr)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *API) chainEnabled(c string) bool {
+	if len(h.cfg.Chains) == 0 {
+		return true
+	}
+	for _, x := range h.cfg.Chains {
+		if x == c {
+			return true
+		}
+	}
+	return false
 }
 
 func methodNotAllowed(allow string) http.HandlerFunc {

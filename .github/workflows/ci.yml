@@ -49,3 +49,5 @@ jobs:
           helm template ci deploy/helm/usdt-tracker > /dev/null
           helm template ci deploy/helm/usdt-tracker --set postgresql.enabled=false \
             --set externalDatabase.url=postgres://u:p@db:5432/tron --set ingress.enabled=true > /dev/null
+          helm template ci deploy/helm/usdt-tracker --set 'config.chains={tron,ton}' \
+            --set secrets.toncenterApiKey=k --set 'config.ton.watch_addresses={UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg}' > /dev/null

@@ -13,7 +13,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain/ton"
 	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
+)
+
+// Supported chains for watch entries.
+const (
+	ChainTron = "tron"
+	ChainTON  = "ton"
 )
 
 // Directions accepted for a watched address (same values as filter.direction).
@@ -35,7 +42,8 @@ var (
 
 // Entry is one runtime watch address.
 type Entry struct {
-	Address   string    `json:"address"` // canonical base58 ("T…")
+	Chain     string    `json:"chain"`   // tron|ton
+	Address   string    `json:"address"` // canonical: base58 ("T…") on TRON, raw "0:<hex>" on TON
 	Label     *string   `json:"label"`
 	Direction string    `json:"direction"` // both|incoming|outgoing
 	Enabled   bool      `json:"enabled"`
@@ -75,6 +83,31 @@ func NormalizeAddress(s string) (string, error) {
 		return "", fmt.Errorf("%w: non-canonical base58", tron.ErrInvalidAddress)
 	}
 	return s, nil
+}
+
+// NormalizeChainAddress validates address for chain and returns the chain
+// and canonical address. An empty chain is detected from the address: TON
+// raw ("0:<hex>") and user-friendly ("EQ…"/"UQ…") forms are TON, anything
+// else must be a TRON base58 address.
+func NormalizeChainAddress(chain, address string) (string, string, error) {
+	chain = strings.ToLower(strings.TrimSpace(chain))
+	address = strings.TrimSpace(address)
+	if chain == "" {
+		chain = ChainTron
+		if _, err := ton.ParseAddress(address); err == nil {
+			chain = ChainTON
+		}
+	}
+	switch chain {
+	case ChainTron:
+		a, err := NormalizeAddress(address)
+		return chain, a, err
+	case ChainTON:
+		a, err := ton.NormalizeAddress(address)
+		return chain, a, err
+	default:
+		return "", "", fmt.Errorf("unknown chain %q (want tron|ton)", chain)
+	}
 }
 
 // NormalizeDirection validates d; empty means DirectionBoth.
@@ -167,6 +200,9 @@ func (m *MemoryStore) AddWatch(_ context.Context, e Entry) (Entry, error) {
 	}
 	if e.Direction == "" {
 		e.Direction = DirectionBoth
+	}
+	if e.Chain == "" {
+		e.Chain = ChainTron
 	}
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = m.now()

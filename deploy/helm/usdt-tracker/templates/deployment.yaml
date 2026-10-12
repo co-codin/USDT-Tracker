@@ -54,6 +54,8 @@ spec:
               value: /etc/usdt-tracker/config.yaml
             - name: CURSOR_FILE
               value: /data/cursor.json
+            - name: TON_CURSOR_FILE
+              value: /data/cursor-ton.json
             - name: HTTP_ADDR
               value: {{ printf ":%v" .Values.containerPort | quote }}
             - name: SINK_POSTGRES_ENABLED

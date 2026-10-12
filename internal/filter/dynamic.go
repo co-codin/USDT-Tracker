@@ -80,7 +80,7 @@ func (d *Dynamic) reload(ctx context.Context) error {
 	}
 	extra := make([]Watch, 0, len(rows))
 	for _, r := range rows {
-		extra = append(extra, Watch{Address: r.Address, Direction: Direction(r.Direction)})
+		extra = append(extra, Watch{Chain: r.Chain, Address: r.Address, Direction: Direction(r.Direction)})
 	}
 	f, err := NewWithWatches(d.cfg, extra)
 	if err != nil {

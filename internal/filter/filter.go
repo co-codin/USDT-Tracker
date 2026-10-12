@@ -6,7 +6,7 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
+	"github.com/co-codin/USDT-Tracker/internal/chainaddr"
 	"github.com/co-codin/USDT-Tracker/internal/model"
 )
 
@@ -33,7 +33,10 @@ const (
 
 // Config is the filter configuration.
 type Config struct {
-	WatchAddresses []string  // base58 or hex
+	// Chain selects the address format and which runtime watches apply
+	// ("tron" when empty, or "ton").
+	Chain          string
+	WatchAddresses []string  // TRON: base58 or hex; TON: raw or user-friendly
 	Direction      Direction // applies to WatchAddresses
 	MinAmount      *big.Int  // raw units; nil/0 disables the large-transfer rule
 	Mode           Mode
@@ -45,13 +48,15 @@ type Config struct {
 
 // Watch is an extra watched address with its own direction (runtime entries).
 type Watch struct {
-	Address   string // base58 or hex
+	Chain     string // empty = tron; watches of other chains are ignored
+	Address   string // see Config.WatchAddresses
 	Direction Direction
 }
 
 // Filter matches transfers. It is safe for concurrent use (read-only).
 type Filter struct {
-	watch     map[string]Direction // base58 address -> direction
+	chain     string
+	watch     map[string]Direction // canonical address -> direction
 	watchRule bool                 // the watch-list condition is configured
 	min       *big.Int
 	mode      Mode
@@ -64,7 +69,13 @@ func New(cfg Config) (*Filter, error) { return NewWithWatches(cfg, nil) }
 // (e.g. rows loaded from the database). When an address appears more than
 // once with different directions, the union applies (both).
 func NewWithWatches(cfg Config, extra []Watch) (*Filter, error) {
-	f := &Filter{watch: make(map[string]Direction), mode: cfg.Mode}
+	f := &Filter{chain: cfg.Chain, watch: make(map[string]Direction), mode: cfg.Mode}
+	if f.chain == "" {
+		f.chain = "tron"
+	}
+	if !chainaddr.Valid(f.chain) {
+		return nil, fmt.Errorf("filter: unknown chain %q", cfg.Chain)
+	}
 	dir, err := checkDirection(cfg.Direction)
 	if err != nil {
 		return nil, err
@@ -83,6 +94,13 @@ func NewWithWatches(cfg Config, extra []Watch) (*Filter, error) {
 		}
 	}
 	for _, w := range extra {
+		wc := w.Chain
+		if wc == "" {
+			wc = "tron"
+		}
+		if wc != f.chain {
+			continue
+		}
 		d, err := checkDirection(w.Direction)
 		if err != nil {
 			return nil, fmt.Errorf("filter: watch address %q: %w", w.Address, err)
@@ -114,11 +132,10 @@ func (f *Filter) add(s string, d Direction) error {
 	if s == "" {
 		return nil
 	}
-	a, err := tron.ParseAddress(s)
+	key, err := chainaddr.Normalize(f.chain, s)
 	if err != nil {
-		return fmt.Errorf("filter: watch address %q: %w", s, err)
+		return fmt.Errorf("filter: %s watch address %q: %w", f.chain, s, err)
 	}
-	key := a.String()
 	if prev, ok := f.watch[key]; ok && prev != d {
 		d = Both
 	}

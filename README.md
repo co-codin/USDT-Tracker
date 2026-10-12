@@ -1,12 +1,14 @@
-# tron-usdt-listener
+# USDT-Tracker (tron-usdt-listener)
 
 [![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go)](go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-A **read-only** listener for **USDT (TRC-20) transfers on TRON**, written in Go.
-It follows the chain block by block, decodes every `Transfer` event of the USDT contract
-[`TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`](https://tronscan.org/#/token20/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t),
-filters them (watch list, large-transfer threshold) and fans them out to pluggable sinks:
+A **read-only** listener for **USDT transfers on TRON (TRC-20) and TON (USD₮ jetton)**, written in Go.
+It follows each chain block by block, decodes every `Transfer` event of the USDT contract
+[`TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`](https://tronscan.org/#/token20/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t)
+on TRON and every transfer of the official USD₮ jetton master
+[`EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs`](https://tonviewer.com/EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs)
+on TON, filters them (watch list, large-transfer threshold) and fans them out to pluggable sinks:
 **stdout JSON**, **signed webhooks**, **Telegram alerts** and **PostgreSQL**.
 
 Typical uses: deposit detection for a payment flow, treasury / whale alerts, feeding an analytics
@@ -37,7 +39,11 @@ pipeline, compliance monitoring of a set of addresses.
   Telegram bot, PostgreSQL (`pgx`, embedded migrations). Required vs best-effort per sink.
 - **Ops** – Prometheus `/metrics`, `/healthz` (503 when stalled), graceful shutdown on
   SIGINT/SIGTERM (finishes the in-flight block), distroless Docker image (~19 MB), docker-compose.
-- **Backfill mode** – `-from/-to` re-processes any historical range without touching the cursor.
+- **TRON and TON, separately or together** – `chains: [tron]` (default), `[ton]` or `[tron, ton]`.
+  Each chain runs its own loop and cursor; sinks, filter rules, metrics (label `chain`) and the admin
+  API are shared. See [TON](#ton-usd-jetton).
+- **Backfill mode** – `-from/-to` (plus `-chain` when several chains are enabled) re-processes any
+  historical range without touching the cursor.
 - Works **without an API key** at a low request rate; set `TRON_PRO_API_KEY` for more headroom.
 - Any TRC-20 token can be watched by changing `token.contract/decimals/symbol`.
 
@@ -96,6 +102,10 @@ internal/
     tron/                     TRON: base58check addresses, read-only HTTP client
       trc20/                  TRC-20 Transfer decoding + chain.Source implementation
       trontest/               in-process mock TRON node for integration tests
+    ton/                      TON: raw/user-friendly addresses, shards, read-only toncenter v3 client
+      jetton/                 USD₮ jetton transfers per masterchain block (chain.Source)
+      tontest/                in-process mock toncenter index for integration tests
+  chainaddr/                  per-chain address validation / canonical form
   config/                     YAML + env overrides + validation
   cursor/                     cursor stores (file, memory) + dedupe set
   filter/                     watch list / threshold matching, Dynamic (static + DB) filter
@@ -157,6 +167,7 @@ docker compose exec postgres psql -U listener -d tron \
 ```
 
 In compose the Postgres sink is enabled and also stores the cursor (`listener_cursor` table).
+For TON add `CHAINS=tron,ton` (or `ton`) and `TONCENTER_API_KEY` to `.env`.
 
 ### Kubernetes (Helm)
 
@@ -193,8 +204,12 @@ kubectl -n usdt create secret generic usdt-secrets \
 helm upgrade --install usdt deploy/helm/usdt-tracker -n usdt --set secrets.existingSecret=usdt-secrets
 ```
 
-Recognised keys: `API_TOKEN`, `TRON_PRO_API_KEY`, `TELEGRAM_BOT_TOKEN`, `WEBHOOK_SECRET`,
-`DATABASE_URL`. No token = admin API disabled. `values.yaml` only contains empty placeholders.
+Recognised keys: `API_TOKEN`, `TRON_PRO_API_KEY`, `TONCENTER_API_KEY`, `TELEGRAM_BOT_TOKEN`,
+`WEBHOOK_SECRET`, `DATABASE_URL`.
+
+**TON in Kubernetes:** `--set 'config.chains={tron,ton}' --set secrets.toncenterApiKey=… --set config.ton.rps=9`
+(plus `config.ton.watch_addresses` for static TON addresses). The chart rejects unknown chains at
+render time and warns in NOTES when TON runs without an API key. No token = admin API disabled. `values.yaml` only contains empty placeholders.
 
 **External Postgres (recommended for production).** Disable the subchart and give a DSN, either inline
 (stored in the chart's Secret) or from an existing Secret:
@@ -250,6 +265,22 @@ See [`config.example.yaml`](config.example.yaml) for every option with comments.
 | `sinks.postgres.enabled` | `SINK_POSTGRES_ENABLED` | `false` | Also switches the cursor to Postgres |
 | `sinks.postgres.dsn` | `DATABASE_URL` | – | `postgres://user:pass@host:5432/db` |
 | `log.level` / `log.format` | `LOG_LEVEL` / `LOG_FORMAT` | `info` / `json` | `text` for humans |
+| `chains` | `CHAINS` | `tron` | `tron`, `ton` or `tron,ton` |
+| `ton.api_url` | `TON_API_URL` | `https://toncenter.com/api/v3` | toncenter v3 (TON Index) compatible API |
+| `ton.api_key` | `TONCENTER_API_KEY` | – | toncenter key (`X-API-Key`); **strongly recommended** |
+| `ton.rps` | `TON_RPS` | `1` | Client-side rate limit (keyless toncenter ≈ 1 rps; ~9 with a free key) |
+| `ton.jetton_master` | `TON_JETTON_MASTER` | USD₮ `EQCxE6…_sDs` | Any jetton master |
+| `ton.symbol` / `ton.decimals` | – | `USDT` / `6` | |
+| `ton.watch_addresses` | `TON_WATCH_ADDRESSES` | – | TON addresses (`EQ…`/`UQ…`/`0:<hex>`), comma-separated in env |
+| `ton.confirmations` | `TON_CONFIRMATIONS` | `3` | Masterchain blocks behind the indexed head |
+| `ton.start_block` | `TON_START_BLOCK` | `0` | Like `listener.start_block`, in masterchain seqnos |
+| `ton.poll_interval` | `TON_POLL_INTERVAL` | `1s` | |
+| `ton.batch_size` / `ton.concurrency` | – | `20` / `2` | |
+| `ton.cursor_file` | `TON_CURSOR_FILE` | `./data/cursor-ton.json` | With Postgres: cursor row `<cursor_name>:ton` |
+
+`filter.direction`, `filter.min_amount` and `filter.mode` apply to both chains; `filter.watch_addresses`
+holds TRON addresses and `ton.watch_addresses` TON addresses (putting a TON address in the TRON list is
+rejected with a hint).
 
 Every sink has `best_effort` (Telegram defaults to `true`, others to `false`). A **required** sink
 blocks progress until it succeeds (no data loss); a **best-effort** sink only logs and counts failures.
@@ -269,14 +300,17 @@ SINK_POSTGRES_ENABLED=true DATABASE_URL=postgres://... API_TOKEN=$API_TOKEN ./bi
 
 | Request | Success | Errors |
 |---|---|---|
-| `GET /v1/addresses` | `200 {"addresses":[…],"static_addresses":[…]}` | |
-| `POST /v1/addresses` body `{"address":"T…","label":"order 42","direction":"incoming"}` (`label`, `direction` optional; direction `both` \| `incoming` \| `outgoing`, default `both`) | `201` + the stored row | `400` invalid address/JSON, `409` already watched |
+| `GET /v1/addresses[?chain=tron\|ton]` | `200 {"addresses":[…],"static_addresses":[…]}` | `400` unknown chain |
+| `POST /v1/addresses` body `{"address":"T…","chain":"tron","label":"order 42","direction":"incoming"}` (`chain`, `label`, `direction` optional; chain is detected from the address when omitted; direction `both` \| `incoming` \| `outgoing`, default `both`) | `201` + the stored row | `400` invalid address/JSON or chain not enabled, `409` already watched |
 | `DELETE /v1/addresses/{address}` | `204` | `400` invalid address, `404` not in the runtime list |
 
 Every request needs `Authorization: Bearer <token>` (`401` otherwise). With an empty token the API is
 **disabled** (`404` for every `/v1` path – it is never left open). With a token but the Postgres sink
 disabled the API answers `503` with an explanation; the static config list keeps working as before.
-Addresses must be base58 `T…` addresses with a valid checksum (hex is rejected by the API).
+TRON addresses must be base58 `T…` addresses with a valid checksum (hex is rejected by the API).
+TON addresses may be raw (`0:<hex>`) or user-friendly (`EQ…`/`UQ…`, use the URL-safe form in
+`DELETE` paths); they are stored and returned in raw form, and every row has a `"chain"` field.
+Adding a TON address to a listener that does not run TON is rejected with `400`.
 
 ```bash
 H="Authorization: Bearer $API_TOKEN"
@@ -284,11 +318,16 @@ H="Authorization: Bearer $API_TOKEN"
 # add a deposit address (incoming transfers only)
 curl -s -X POST localhost:9090/v1/addresses -H "$H" -H 'Content-Type: application/json' \
   -d '{"address":"TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv","label":"order 1001","direction":"incoming"}'
-# {"address":"TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv","label":"order 1001","direction":"incoming",
+# {"chain":"tron","address":"TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv","label":"order 1001","direction":"incoming",
 #  "enabled":true,"created_at":"2026-10-08T20:41:07.512Z"}
 
 # list (runtime rows + read-only static config addresses)
 curl -s localhost:9090/v1/addresses -H "$H" | jq .
+
+# a TON deposit address (chain detected from the address; stored as raw 0:<hex>)
+curl -s -X POST localhost:9090/v1/addresses -H "$H" -H 'Content-Type: application/json' \
+  -d '{"address":"UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg","label":"ton order 7","direction":"incoming"}'
+# {"chain":"ton","address":"0:9db2cae853cf2db870ea06d1e8286f202cd9ad689dfc74b98195520d06495859",...}
 
 # remove it once the order is paid
 curl -s -X DELETE localhost:9090/v1/addresses/TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv -H "$H" -w '%{http_code}\n'
@@ -314,6 +353,55 @@ How it works:
 **Security:** the token is compared in constant time; request bodies are capped at 4 KB. The API
 has no TLS of its own – keep `:9090` on localhost/private network (docker-compose binds
 `127.0.0.1:9090`) or put it behind a TLS reverse proxy. `/metrics` and `/healthz` stay unauthenticated.
+
+## TON (USD₮ jetton)
+
+Enable with `CHAINS=ton` (TON only) or `CHAINS=tron,ton` (both, concurrently):
+
+```bash
+CHAINS=tron,ton TONCENTER_API_KEY=… TON_RPS=9 \
+TON_WATCH_ADDRESSES=UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg ./bin/tron-usdt-listener
+# backfill a TON range (masterchain seqnos) when several chains are enabled:
+./bin/tron-usdt-listener -chain ton -from 98632900 -to 98632905
+```
+
+How it works (read-only, [toncenter v3 / TON Index](https://toncenter.com/api/v3/)):
+
+- **Block number = masterchain seqno.** Head is `GET /api/v3/masterchainInfo` (`last.seqno`), the
+  safe head is `head − ton.confirmations`. TON masterchain blocks are final once committed, the
+  small margin only covers indexer lag.
+- For each masterchain block: `GET /api/v3/masterchainBlockShards?seqno=N` returns the shard
+  blocks it committed with their `[start_lt, end_lt]`; then
+  `GET /api/v3/jetton/transfers?jetton_master=…&start_lt=…&end_lt=…&sort=asc` (paged, 1000/page).
+  A transfer belongs to block `N` only if its transaction (on the sender's jetton wallet) is in one
+  of those shards *and* its logical time is inside that shard block's lt range, so every transfer is
+  attributed to exactly one masterchain block even though lt ranges of different shards overlap.
+  Aborted transactions and other jettons are skipped. A block the indexer does not have yet
+  (`404`) is retried, never skipped.
+- **Addresses** are normalised to the raw form `0:<64 lowercase hex>` (owner wallets, not jetton
+  wallets) for matching, storage and output; config and API accept raw and user-friendly
+  (`EQ…`/`UQ…`, bounceable or not, base64url or std, checksum verified). Telegram shows the
+  wallet-style `UQ…` form.
+- **Amounts**: USD₮ on TON has 6 decimals, like TRON (`11250000` → `11.25`).
+- **Dedupe key / id**: `ton:<tx hash hex>:0` (TRON keys stay `<tx_id>:<log_index>`). The text
+  comment of the transfer (often an invoice / order id) is exposed as `memo`.
+- **Rate limits**: 2 requests per masterchain block and the masterchain produces ~2.4 blocks/s, so
+  keyless toncenter (≈1 req/s) **cannot keep up with mainnet head** (fine for backfills of a few
+  blocks / testing). Get a free key from [@tonapibot](https://t.me/tonapibot) (10 rps) and set
+  `TONCENTER_API_KEY` + `TON_RPS=9`, or point `TON_API_URL` at your own
+  [ton-indexer](https://github.com/toncenter/ton-indexer). `429` / `5xx` are retried with backoff and
+  `Retry-After`.
+
+Example TON stdout line (real mainnet transfer, masterchain block 98632901):
+
+```json
+{"msg":"transfer","id":"ton:540a39b8299cc5d0239eefa2be4268445a262b897a6cd970f1fb2ac4e70aef19:0","chain":"ton",
+ "tx_id":"540a39b8299cc5d0239eefa2be4268445a262b897a6cd970f1fb2ac4e70aef19","log_index":0,"block":98632901,
+ "block_time":"2026-10-12T21:29:58Z","token":"USDT",
+ "from":"0:0c8c0fb575238aaa844a89b36eb7546359e4e40297bcbe574c05611d884f36f1",
+ "to":"0:852443f8599fe6a5da34fe43049ac4e0beb3071bb2bfb56635ea9421287c283a",
+ "amount":"11.25","amount_raw":"11250000","reasons":"all","memo":"750 Telegram Stars \n\nRef#zopsXyorO"}
+```
 
 ## Output formats
 
@@ -348,8 +436,11 @@ X-Signature-256: sha256=<hex HMAC-SHA256(secret, "<timestamp>.<raw body>")>
  "log_index":0,"block_number":86884075,"block_time":"2026-10-06T22:15:51Z",
  "contract":"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t","symbol":"USDT","decimals":6,
  "from":"TGkP…2mBs","to":"TLaw…yNrP","amount":"3069749.967994","amount_raw":"3069749967994",
- "reasons":["large_transfer"]}]}
+ "reasons":["large_transfer"],"chain":"tron"}]}
 ```
+
+Every transfer carries `"chain":"tron"` or `"chain":"ton"` (TON transfers may also carry `"memo"`).
+A webhook batch always contains one block of one chain; TON `block_number` is the masterchain seqno.
 
 `5xx`, `408`, `429` (with `Retry-After`) and network errors are retried with backoff; other `4xx` are
 permanent. Verify signatures in Go with the bundled package:
@@ -373,6 +464,7 @@ Block: 86884075 · 2026-10-06 22:15:51 UTC
 Tx: 4cc4b76b…7464c7   (links to Tronscan)
 ```
 
+TON alerts link to [Tonviewer](https://tonviewer.com) and show the `Memo` when present.
 Watched addresses get `📥 Incoming USDT` / `📤 Outgoing USDT` titles. Messages are rate limited
 (~1/s per chat), `429 retry_after` is honoured, and at most `max_messages_per_block` alerts are sent
 per block (the rest are summarised). Create a bot with [@BotFather](https://t.me/BotFather), add it to
@@ -387,20 +479,29 @@ trc20_transfers(id, tx_id, log_index, block_number, block_time, contract, symbol
                 from_address, to_address, amount_raw NUMERIC(78,0), amount NUMERIC(78,18),
                 reasons TEXT[], created_at, UNIQUE (tx_id, log_index))
 listener_cursor(name PRIMARY KEY, last_block, updated_at)
-watch_addresses(address TEXT PRIMARY KEY  -- base58 T…, label TEXT NULL,
+watch_addresses(address TEXT PRIMARY KEY  -- base58 T… or TON raw 0:<hex>, label TEXT NULL,
                 direction TEXT DEFAULT 'both' CHECK (both|incoming|outgoing),
                 enabled BOOLEAN DEFAULT true, created_at TIMESTAMPTZ)   -- migration 0002
+-- migration 0003 (backward compatible, existing rows become 'tron'):
+--   trc20_transfers  + chain TEXT NOT NULL DEFAULT 'tron', + memo TEXT, index (chain, block_number)
+--   watch_addresses  + chain TEXT NOT NULL DEFAULT 'tron', address check per chain
 ```
+
+The table keeps its historical name `trc20_transfers` for compatibility; filter TON rows with
+`WHERE chain = 'ton'`. The TRON cursor row is `<cursor_name>` (unchanged), the TON one `<cursor_name>:ton`.
 
 ## Metrics & health
 
 `GET /healthz` → `200 {"ok":true,"status":{"head":…,"safe_head":…,"cursor":…,"lag":…}}`, or `503`
 when no progress was made for `health_stale_after` (node unreachable, sink stuck, DB down).
+With several chains the status is per chain: `{"ok":true,"status":{"chains":{"tron":{…},"ton":{…}}}}`
+and `ok` is false if any chain is stalled.
 The Docker image uses `listener -healthcheck` (no curl in distroless).
 
-Selected metrics (`tron_listener_*`): `head_block`, `safe_head_block`, `cursor_block`, `lag_blocks`,
-`blocks_processed_total`, `transfers_decoded_total`, `transfers_matched_total{reason}`,
-`rpc_requests_total{endpoint,status}`, `rpc_request_duration_seconds`, `rpc_retries_total{endpoint,reason}`,
+Selected metrics (`tron_listener_*`, name kept for compatibility; per-chain ones carry a `chain`
+label, `tron` or `ton`): `head_block`, `safe_head_block`, `cursor_block`, `lag_blocks`,
+`blocks_processed_total`, `transfers_decoded_total`, `transfers_matched_total{chain,reason}`,
+`rpc_requests_total{chain,endpoint,status}`, `rpc_request_duration_seconds`, `rpc_retries_total{chain,endpoint,reason}`,
 `sink_deliveries_total{sink,status}`, `sink_delivery_duration_seconds`, `dispatch_retries_total`,
 `decode_errors_total`, `block_fetch_errors_total`.
 
@@ -427,6 +528,13 @@ make test-integration TEST_DATABASE_URL='postgres://postgres:test@localhost:5543
   crash-replay with stable idempotency ids, per-sink dedupe when one sink fails, filters, `/healthz`
   and `/metrics`, Postgres as sink + cursor, and adding/removing an address through the HTTP API
   while the listener runs (Postgres tests use a throw-away schema).
+- **TON tests**: address parsing/formatting checked against real toncenter `address_book` pairs,
+  shard prefix matching, the toncenter client (API key header, 429 + `Retry-After`, 5xx retries,
+  404 = not indexed), the jetton source against a **real captured mainnet response** (masterchain
+  block 98632901) and a synthetic mock index (`internal/chain/ton/tontest`) with two shards whose lt
+  ranges overlap across masterchain blocks (every transfer exactly once, in the right block, with
+  page sizes 1/2/1000), and e2e runs: TON only with faults and restart, TRON + TON concurrently with
+  separate cursors, `-chain ton` backfill, and Postgres with a TON address added via the API.
 
 ## Design notes & limitations
 
@@ -440,6 +548,10 @@ make test-integration TEST_DATABASE_URL='postgres://postgres:test@localhost:5543
 - One `gettransactioninfobyblocknum` request per block (≈80–300 KB). Without an API key keep
   `tron.rps` around 2–3 – plenty for live following (1 block / 3 s) and slow catch-up. For long
   backfills use an API key or your own node (`TRON_API_URL=http://your-node:8090`).
+- TON: one `masterchainBlockShards` + ≥1 `jetton/transfers` request per masterchain block; the
+  data comes from the toncenter index (a trusted third party, like TronGrid on TRON). Bounced
+  jetton transfers (the recipient's wallet failing after the sender's wallet succeeded) are rare
+  and not detected; use `memo` / your own reconciliation for payment-critical flows.
 - Only the `Transfer` event is decoded (not `Approval`, mint/burn helpers like `Issue`/`Redeem`).
 - The runtime watch list is loaded fully into memory on each reload (one indexed query every
   `reload_interval`); fine for tens of thousands of addresses. Adding an address does not backfill
@@ -454,6 +566,14 @@ Webhook、Telegram 机器人以及 PostgreSQL。游标持久化（文件或 Post
 支持确认数、按 `tx_id + log_index` 去重、指数退避重试和 429 限流处理，并提供 Prometheus
 `/metrics` 与 `/healthz`。不需要也不会接触任何私钥，从不发送交易。快速开始：`make build && ./bin/tron-usdt-listener`
 或 `docker compose up -d --build`。
+
+**TON 支持：** 设置 `CHAINS=ton`（只监听 TON）或 `CHAINS=tron,ton`（两条链同时运行，各自独立游标，
+共用输出和过滤规则）即可监听 TON 上官方 USD₮ jetton（`EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs`，
+6 位小数）的转账。数据来自 toncenter v3 公共索引 API，同样只读；区块号是 masterchain seqno，
+地址统一为 raw 形式 `0:<hex>`（配置和 API 也接受 `EQ…`/`UQ…`），转账备注会放在 `memo` 字段。
+TON 地址写在 `ton.watch_addresses` / `TON_WATCH_ADDRESSES`，也可以通过 `/v1/addresses` 动态添加
+（自动识别链，或传 `"chain":"ton"`）。不带 API key 的 toncenter 每秒只能请求约 1 次，跟不上主网出块，
+生产环境请在 @tonapibot 申请免费 key，设置 `TONCENTER_API_KEY` 和 `TON_RPS=9`。
 
 **运行时地址管理（v1 API）：** 启用 Postgres sink 并设置 `API_TOKEN` 后，可以通过
 `GET/POST/DELETE /v1/addresses`（`Authorization: Bearer <token>`）在运行中增删监听地址，无需重启；
@@ -472,6 +592,15 @@ TRON. Он обходит блоки по диапазонам, декодиру
 задержкой и обработка 429, метрики Prometheus и `/healthz`. Приватные ключи не используются,
 транзакции не отправляются. Быстрый старт: `make build && ./bin/tron-usdt-listener` или
 `docker compose up -d --build`.
+
+**TON:** `CHAINS=ton` (только TON) или `CHAINS=tron,ton` (обе сети параллельно, у каждой свой курсор,
+синки и правила фильтра общие) включают отслеживание официального жеттона USD₮ в TON
+(`EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs`, 6 знаков) через публичный read-only API toncenter v3.
+Номер блока — seqno мастерчейна, адреса приводятся к raw-виду `0:<hex>` (в конфиге и API можно
+`EQ…`/`UQ…`), комментарий перевода попадает в поле `memo`. TON-адреса задаются в `ton.watch_addresses`
+/ `TON_WATCH_ADDRESSES` или через `/v1/addresses` (сеть определяется автоматически или `"chain":"ton"`).
+Без API-ключа toncenter даёт ~1 запрос/с и не успевает за мейннетом — получите бесплатный ключ в
+@tonapibot и задайте `TONCENTER_API_KEY` и `TON_RPS=9`.
 
 **Адреса во время работы (API v1):** при включённом Postgres-синке и заданном `API_TOKEN` адреса
 можно добавлять и удалять без перезапуска через `GET/POST/DELETE /v1/addresses`

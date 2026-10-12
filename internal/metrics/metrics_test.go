@@ -12,12 +12,22 @@ import (
 
 func TestObservers(t *testing.T) {
 	m := New()
-	m.ObserveRequest("/wallet/getblock", "200", 10*time.Millisecond)
-	m.ObserveRetry("/wallet/getblock", "rate_limited")
+	tr, tn := m.For("tron"), m.For("ton")
+	tr.ObserveRequest("/wallet/getblock", "200", 10*time.Millisecond)
+	tr.ObserveRetry("/wallet/getblock", "rate_limited")
+	tn.ObserveRequest("/masterchainInfo", "200", time.Millisecond)
+	tn.HeadBlock.Set(42)
+	tn.TransfersMatched.WithLabelValues("watch_incoming").Inc()
 	m.ObserveSink("webhook", "ok", 3, time.Millisecond)
 
-	if v := testutil.ToFloat64(m.RPCRequests.WithLabelValues("/wallet/getblock", "200")); v != 1 {
+	if v := testutil.ToFloat64(m.RPCRequests.WithLabelValues("tron", "/wallet/getblock", "200")); v != 1 {
 		t.Fatalf("rpc requests = %v", v)
+	}
+	if v := testutil.ToFloat64(m.RPCRequests.WithLabelValues("ton", "/masterchainInfo", "200")); v != 1 {
+		t.Fatalf("ton rpc requests = %v", v)
+	}
+	if v := testutil.ToFloat64(m.HeadBlock.WithLabelValues("ton")); v != 42 {
+		t.Fatalf("ton head = %v", v)
 	}
 	if v := testutil.ToFloat64(m.SinkTransfers.WithLabelValues("webhook", "ok")); v != 3 {
 		t.Fatalf("sink transfers = %v", v)
@@ -25,7 +35,8 @@ func TestObservers(t *testing.T) {
 	rec := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
 	body, _ := io.ReadAll(rec.Body)
-	for _, s := range []string{"tron_listener_rpc_retries_total", "tron_listener_sink_delivery_duration_seconds", "go_goroutines"} {
+	for _, s := range []string{"tron_listener_rpc_retries_total", "tron_listener_sink_delivery_duration_seconds", "go_goroutines",
+		`tron_listener_head_block{chain="ton"} 42`, `tron_listener_transfers_matched_total{chain="ton",reason="watch_incoming"} 1`} {
 		if !strings.Contains(string(body), s) {
 			t.Errorf("metrics output missing %s", s)
 		}

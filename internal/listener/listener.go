@@ -35,6 +35,14 @@ type Config struct {
 	Concurrency     int           // parallel block fetches (default 2)
 	DispatchTimeout time.Duration // per delivery attempt; in-flight blocks finish on shutdown (default 30s)
 	Backoff         retry.Backoff // backoff for loop-level errors
+	Chain           string        // chain name for metrics/logs (default "tron")
+}
+
+func (c Config) chainName() string {
+	if c.Chain == "" {
+		return "tron"
+	}
+	return c.Chain
 }
 
 func (c *Config) defaults() {
@@ -92,19 +100,30 @@ type Listener struct {
 	filter Matcher
 	disp   Dispatcher
 	store  cursor.Store
-	m      *metrics.Metrics
+	m      *metrics.Chain
 	log    *slog.Logger
 
 	mu     sync.RWMutex
 	status Status
 }
 
-// New creates a listener. m may be nil.
+// New creates a listener. m may be nil; otherwise its collectors are used
+// with the label chain=cfg.Chain (default "tron").
 func New(cfg Config, src chain.Source, f Matcher, d Dispatcher, store cursor.Store, m *metrics.Metrics, log *slog.Logger) *Listener {
+	var cm *metrics.Chain
+	if m != nil {
+		cm = m.For(cfg.chainName())
+	}
+	return NewWithChainMetrics(cfg, src, f, d, store, cm, log)
+}
+
+// NewWithChainMetrics is New with an explicit per-chain metrics view (nil ok).
+func NewWithChainMetrics(cfg Config, src chain.Source, f Matcher, d Dispatcher, store cursor.Store, m *metrics.Chain, log *slog.Logger) *Listener {
 	cfg.defaults()
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
+	log = log.With("chain", cfg.chainName())
 	now := time.Now()
 	return &Listener{cfg: cfg, src: src, filter: f, disp: d, store: store, m: m, log: log,
 		status: Status{StartedAt: now, LastProgressAt: now}}

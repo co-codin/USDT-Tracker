@@ -26,7 +26,7 @@ func transfer(from, to string) model.Transfer {
 func TestBuildFilterStaticWithoutSource(t *testing.T) {
 	cfg := config.Default()
 	cfg.Filter.WatchAddresses = []string{alice}
-	m, dyn, err := buildFilter(context.Background(), cfg, nil, nil, nil)
+	m, dyn, err := buildFilter(context.Background(), cfg, "tron", nil, nil, nil)
 	if err != nil || dyn != nil {
 		t.Fatalf("static: %v %v", dyn, err)
 	}
@@ -46,7 +46,7 @@ func TestBuildFilterDynamicMergesSource(t *testing.T) {
 	cfg.Filter.WatchAddresses = []string{alice}
 	cfg.API.Token = "0123456789abcdef0123"
 
-	m, dyn, err := buildFilter(ctx, cfg, nil, store, nil)
+	m, dyn, err := buildFilter(ctx, cfg, "tron", nil, store, nil)
 	if err != nil || dyn == nil || m != dyn {
 		t.Fatalf("dynamic: %T %v", m, err)
 	}
@@ -65,7 +65,7 @@ func TestBuildFilterDynamicMergesSource(t *testing.T) {
 	// No token: an empty merged list keeps the legacy firehose behaviour.
 	cfg.API.Token = ""
 	cfg.Filter.WatchAddresses = nil
-	m, _, err = buildFilter(ctx, cfg, nil, watch.NewMemoryStore(), nil)
+	m, _, err = buildFilter(ctx, cfg, "tron", nil, watch.NewMemoryStore(), nil)
 	if err != nil || !m.MatchesEverything() {
 		t.Fatalf("no token, empty list: firehose expected (%v)", err)
 	}
@@ -73,12 +73,12 @@ func TestBuildFilterDynamicMergesSource(t *testing.T) {
 	// Source unavailable at startup → error (fail fast, don't run blind).
 	bad := watch.NewMemoryStore()
 	bad.Err = errors.New("db down")
-	if _, _, err := buildFilter(ctx, cfg, nil, bad, nil); err == nil {
+	if _, _, err := buildFilter(ctx, cfg, "tron", nil, bad, nil); err == nil {
 		t.Fatal("expected startup error when the watch list cannot be loaded")
 	}
 	// Invalid static config is rejected for the dynamic filter too.
 	cfg.Filter.Mode = "most"
-	if _, _, err := buildFilter(ctx, cfg, nil, store, nil); err == nil {
+	if _, _, err := buildFilter(ctx, cfg, "tron", nil, store, nil); err == nil {
 		t.Fatal("expected config error")
 	}
 }
@@ -105,17 +105,27 @@ func TestNewStartupErrors(t *testing.T) {
 	}
 }
 
-func TestCursorDescAndCanonicalAddresses(t *testing.T) {
+func TestCursorStoreAndStaticAddresses(t *testing.T) {
 	a := &App{cfg: config.Default(), opts: Options{Backfill: true}}
-	if !strings.Contains(a.cursorDesc(), "memory") {
-		t.Fatal(a.cursorDesc())
+	if _, d := a.cursorStore("tron"); !strings.Contains(d, "memory") {
+		t.Fatal(d)
 	}
 	a.opts.Backfill = false
-	if !strings.HasPrefix(a.cursorDesc(), "file:") {
-		t.Fatal(a.cursorDesc())
+	if _, d := a.cursorStore("tron"); d != "file:./data/cursor.json" {
+		t.Fatal(d)
 	}
-	got := canonicalAddresses([]string{"41f4a3aa3c52cdc41e3c1a7b8f7493ae1164ee7f07", bob, "junk"})
+	if _, d := a.cursorStore("ton"); d != "file:./data/cursor-ton.json" {
+		t.Fatal(d)
+	}
+	cfg := config.Default()
+	cfg.Filter.WatchAddresses = []string{"41f4a3aa3c52cdc41e3c1a7b8f7493ae1164ee7f07", bob, "junk"}
+	cfg.TON.WatchAddresses = []string{"UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg"}
+	got := staticAddresses(cfg, []string{"tron"})
 	if len(got) != 2 || got[0] != alice || got[1] != bob {
 		t.Fatalf("canonical = %v", got)
+	}
+	got = staticAddresses(cfg, []string{"tron", "ton"})
+	if len(got) != 3 || got[2] != "0:9db2cae853cf2db870ea06d1e8286f202cd9ad689dfc74b98195520d06495859" {
+		t.Fatalf("multi = %v", got)
 	}
 }

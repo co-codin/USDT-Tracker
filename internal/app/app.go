@@ -11,11 +11,18 @@ import (
 	"log/slog"
 	"math/big"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
+	"github.com/co-codin/USDT-Tracker/internal/chain"
+	"github.com/co-codin/USDT-Tracker/internal/chain/ton"
+	"github.com/co-codin/USDT-Tracker/internal/chain/ton/jetton"
 	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
 	"github.com/co-codin/USDT-Tracker/internal/chain/tron/trc20"
+	"github.com/co-codin/USDT-Tracker/internal/chainaddr"
 	"github.com/co-codin/USDT-Tracker/internal/config"
 	"github.com/co-codin/USDT-Tracker/internal/cursor"
 	"github.com/co-codin/USDT-Tracker/internal/filter"
@@ -34,19 +41,32 @@ type Options struct {
 	Version  string
 	Backfill bool          // use an in-memory cursor and no HTTP server
 	Stdout   io.Writer     // stdout sink destination (default os.Stdout)
-	Backoff  retry.Backoff // backoff for TRON API and loop retries (zero = defaults)
+	Backoff  retry.Backoff // backoff for chain API and loop retries (zero = defaults)
+	// BackfillChain selects the chain to backfill when several are enabled
+	// (default: the only enabled chain).
+	BackfillChain string
+}
+
+// Pipeline is one chain's listener with its filter and cursor.
+type Pipeline struct {
+	Chain    string
+	Listener *listener.Listener
+	dyn      *filter.Dynamic
+	cursor   string
 }
 
 // App is a fully wired listener.
 type App struct {
-	cfg      config.Config
-	opts     Options
-	log      *slog.Logger
-	Metrics  *metrics.Metrics
-	Listener *listener.Listener
-	disp     *sink.Dispatcher
-	pg       *postgres.Store
-	srv      *server.Server
+	cfg     config.Config
+	opts    Options
+	log     *slog.Logger
+	Metrics *metrics.Metrics
+	// Listener is the first enabled chain's listener (kept for single-chain callers).
+	Listener  *listener.Listener
+	Pipelines []*Pipeline
+	disp      *sink.Dispatcher
+	pg        *postgres.Store
+	srv       *server.Server
 }
 
 // New builds the application. Call Run, then Close.
@@ -62,31 +82,39 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 	}
 	a := &App{cfg: cfg, opts: opts, log: log, Metrics: metrics.New()}
 
-	contract, err := tron.ParseAddress(cfg.Token.Contract)
-	if err != nil {
-		return nil, err
+	chains := cfg.Chains
+	if len(chains) == 0 {
+		chains = []string{model.ChainTron}
 	}
-	client := tron.NewClient(tron.Options{
-		BaseURL:    cfg.Tron.APIURL,
-		APIKey:     cfg.Tron.APIKey,
-		Timeout:    cfg.Tron.Timeout.D(),
-		RPS:        cfg.Tron.RPS,
-		MaxRetries: cfg.Tron.MaxRetries,
-		Backoff:    opts.Backoff,
-		UserAgent:  "tron-usdt-listener/" + opts.Version,
-		Observer:   a.Metrics,
-		Logger:     log,
-	})
-	dec := trc20.New(trc20.Token{Contract: contract, Symbol: cfg.Token.Symbol, Decimals: cfg.Token.Decimals})
-	src := trc20.NewSource(client, dec, log, a.Metrics.DecodeErrors.Inc)
+	if opts.Backfill {
+		switch {
+		case opts.BackfillChain != "":
+			if !slices.Contains(chains, opts.BackfillChain) {
+				return nil, fmt.Errorf("backfill chain %q is not enabled (chains: %s)", opts.BackfillChain, strings.Join(chains, ","))
+			}
+			chains = []string{opts.BackfillChain}
+		case len(chains) > 1:
+			return nil, fmt.Errorf("several chains are enabled (%s): pick the one to backfill with -chain", strings.Join(chains, ","))
+		}
+	}
 
-	minAmount, err := cfg.MinAmount()
-	if err != nil {
-		return nil, err
+	// Build sources and validate filters before connecting to anything.
+	sources := make(map[string]chain.Source, len(chains))
+	for _, c := range chains {
+		src, err := a.buildSource(c)
+		if err != nil {
+			return nil, err
+		}
+		sources[c] = src
+		minAmount, err := chainMinAmount(cfg, c)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := filter.New(staticFilterConfig(cfg, c, minAmount)); err != nil {
+			return nil, err
+		}
 	}
-	if _, err := filter.New(staticFilterConfig(cfg, minAmount)); err != nil { // fail fast, before connecting
-		return nil, err
-	}
+
 	entries, pg, err := buildSinks(ctx, cfg, opts.Stdout)
 	if err != nil {
 		return nil, err
@@ -98,30 +126,19 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 	if pg != nil {
 		watchSrc = pg.Watchlist()
 	}
-	matcher, dyn, err := buildFilter(ctx, cfg, minAmount, watchSrc, log)
-	if err != nil {
-		return nil, errors.Join(err, a.disp.Close())
+	for _, c := range chains {
+		minAmount, _ := chainMinAmount(cfg, c)
+		matcher, dyn, err := buildFilter(ctx, cfg, c, minAmount, watchSrc, log)
+		if err != nil {
+			return nil, errors.Join(err, a.disp.Close())
+		}
+		store, desc := a.cursorStore(c)
+		lc := listenerConfig(cfg, c, opts.Backoff)
+		p := &Pipeline{Chain: c, dyn: dyn, cursor: desc,
+			Listener: listener.New(lc, sources[c], matcher, a.disp, store, a.Metrics, log)}
+		a.Pipelines = append(a.Pipelines, p)
 	}
-
-	var store cursor.Store
-	switch {
-	case opts.Backfill:
-		store = &cursor.MemoryStore{}
-	case pg != nil:
-		store = pg
-	default:
-		store = cursor.NewFileStore(cfg.Cursor.File)
-	}
-
-	a.Listener = listener.New(listener.Config{
-		Confirmations:   cfg.Listener.Confirmations,
-		PollInterval:    cfg.Listener.PollInterval.D(),
-		StartBlock:      cfg.Listener.StartBlock,
-		BatchSize:       cfg.Listener.BatchSize,
-		Concurrency:     cfg.Listener.Concurrency,
-		DispatchTimeout: cfg.Listener.DispatchTimeout.D(),
-		Backoff:         opts.Backoff,
-	}, src, matcher, a.disp, store, a.Metrics, log)
+	a.Listener = a.Pipelines[0].Listener
 
 	if cfg.HTTP.Addr != "" && !opts.Backfill {
 		a.srv = server.New(cfg.HTTP.Addr, a.Metrics.Handler(), a.health, log)
@@ -130,28 +147,35 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 			ws = pg.Watchlist()
 		}
 		a.srv.Handle("/v1/", watch.NewAPI(watch.APIConfig{
-			Token: cfg.API.Token, Store: ws, Static: canonicalAddresses(cfg.Filter.WatchAddresses),
+			Token: cfg.API.Token, Store: ws, Static: staticAddresses(cfg, chains), Chains: chains,
 			OnChange: func() {
-				if dyn != nil {
-					dyn.Invalidate()
+				for _, p := range a.Pipelines {
+					if p.dyn != nil {
+						p.dyn.Invalidate()
+					}
 				}
 			},
 			Log: log,
 		}))
 	}
 
-	if cfg.Tron.APIKey == "" {
+	if cfg.HasChain(model.ChainTron) && cfg.Tron.APIKey == "" && sources[model.ChainTron] != nil {
 		log.Warn("TRON_PRO_API_KEY not set: using public rate limits, keep tron.rps low")
 	}
-	log.Info("tron-usdt-listener configured",
+	if sources[model.ChainTON] != nil && cfg.TON.APIKey == "" {
+		log.Warn("TONCENTER_API_KEY not set: keyless toncenter allows ~1 req/s, which cannot keep up with mainnet head (2 requests per masterchain block); get a key from @tonapibot and raise TON_RPS")
+	}
+	cursors := make([]string, 0, len(a.Pipelines))
+	for _, p := range a.Pipelines {
+		cursors = append(cursors, p.Chain+"="+p.cursor)
+	}
+	log.Info("usdt-tracker configured",
 		"version", opts.Version,
-		"api_url", cfg.Tron.APIURL,
-		"api_key_set", cfg.Tron.APIKey != "",
-		"token", cfg.Token.Symbol,
-		"contract", contract.String(),
+		"chains", strings.Join(chains, ","),
 		"sinks", strings.Join(a.disp.Names(), ","),
-		"cursor", a.cursorDesc(),
+		"cursor", strings.Join(cursors, " "),
 		"watch_addresses", len(cfg.Filter.WatchAddresses),
+		"ton_watch_addresses", len(cfg.TON.WatchAddresses),
 		"runtime_watch_list", pg != nil,
 		"admin_api", cfg.API.Token != "" && cfg.HTTP.Addr != "",
 		"min_amount", cfg.Filter.MinAmount,
@@ -159,8 +183,84 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 	return a, nil
 }
 
-// Run starts the HTTP server (if enabled) and processes blocks until ctx is
-// cancelled. With from > 0 it backfills [from, to] and returns.
+func (a *App) buildSource(c string) (chain.Source, error) {
+	cfg, opts, log := a.cfg, a.opts, a.log
+	cm := a.Metrics.For(c)
+	switch c {
+	case model.ChainTron:
+		contract, err := tron.ParseAddress(cfg.Token.Contract)
+		if err != nil {
+			return nil, err
+		}
+		client := tron.NewClient(tron.Options{
+			BaseURL: cfg.Tron.APIURL, APIKey: cfg.Tron.APIKey, Timeout: cfg.Tron.Timeout.D(),
+			RPS: cfg.Tron.RPS, MaxRetries: cfg.Tron.MaxRetries, Backoff: opts.Backoff,
+			UserAgent: "tron-usdt-listener/" + opts.Version, Observer: cm, Logger: log,
+		})
+		log.Info("tron source", "api_url", cfg.Tron.APIURL, "api_key_set", cfg.Tron.APIKey != "",
+			"token", cfg.Token.Symbol, "contract", contract.String())
+		dec := trc20.New(trc20.Token{Contract: contract, Symbol: cfg.Token.Symbol, Decimals: cfg.Token.Decimals})
+		return trc20.NewSource(client, dec, log, cm.DecodeErrors.Inc), nil
+	case model.ChainTON:
+		master, err := ton.ParseAddress(cfg.TON.JettonMaster)
+		if err != nil {
+			return nil, fmt.Errorf("ton.jetton_master: %w", err)
+		}
+		client := ton.NewClient(ton.Options{
+			BaseURL: cfg.TON.APIURL, APIKey: cfg.TON.APIKey, Timeout: cfg.TON.Timeout.D(),
+			RPS: cfg.TON.RPS, MaxRetries: cfg.TON.MaxRetries, Backoff: opts.Backoff,
+			UserAgent: "usdt-tracker/" + opts.Version, Observer: cm, Logger: log,
+		})
+		log.Info("ton source", "api_url", cfg.TON.APIURL, "api_key_set", cfg.TON.APIKey != "",
+			"token", cfg.TON.Symbol, "jetton_master", master.Friendly(true, false))
+		return jetton.NewSource(client, jetton.Token{Master: master, Symbol: cfg.TON.Symbol, Decimals: cfg.TON.Decimals},
+			log.With("chain", c), cm.DecodeErrors.Inc), nil
+	default:
+		return nil, fmt.Errorf("unknown chain %q", c)
+	}
+}
+
+func (a *App) cursorStore(c string) (cursor.Store, string) {
+	switch {
+	case a.opts.Backfill:
+		return &cursor.MemoryStore{}, "memory (backfill)"
+	case a.pg != nil:
+		if c == model.ChainTron {
+			return a.pg, "postgres:" + a.pg.CursorName()
+		}
+		name := a.pg.CursorName() + ":" + c
+		return a.pg.Cursor(name), "postgres:" + name
+	case c == model.ChainTON:
+		return cursor.NewFileStore(a.cfg.TON.CursorFile), "file:" + a.cfg.TON.CursorFile
+	default:
+		return cursor.NewFileStore(a.cfg.Cursor.File), "file:" + a.cfg.Cursor.File
+	}
+}
+
+func listenerConfig(cfg config.Config, c string, b retry.Backoff) listener.Config {
+	l := cfg.Listener
+	lc := listener.Config{
+		Chain: c, Confirmations: l.Confirmations, PollInterval: l.PollInterval.D(), StartBlock: l.StartBlock,
+		BatchSize: l.BatchSize, Concurrency: l.Concurrency, DispatchTimeout: l.DispatchTimeout.D(), Backoff: b,
+	}
+	if c == model.ChainTON {
+		t := cfg.TON
+		lc.Confirmations, lc.PollInterval, lc.StartBlock = t.Confirmations, t.PollInterval.D(), t.StartBlock
+		lc.BatchSize, lc.Concurrency = t.BatchSize, t.Concurrency
+	}
+	return lc
+}
+
+func chainMinAmount(cfg config.Config, c string) (*big.Int, error) {
+	if c == model.ChainTON {
+		return cfg.TONMinAmount()
+	}
+	return cfg.MinAmount()
+}
+
+// Run starts the HTTP server (if enabled) and processes blocks on every
+// enabled chain until ctx is cancelled. With from > 0 it backfills
+// [from, to] on the single selected chain and returns.
 func (a *App) Run(ctx context.Context, from, to int64) error {
 	if a.srv != nil {
 		if err := a.srv.Start(); err != nil {
@@ -178,7 +278,20 @@ func (a *App) Run(ctx context.Context, from, to int64) error {
 		}
 		return a.Listener.Backfill(ctx, from, to)
 	}
-	return a.Listener.Run(ctx)
+	if len(a.Pipelines) == 1 {
+		return a.Listener.Run(ctx)
+	}
+	// One chain failing fatally stops the others so the process restarts as a whole.
+	g, gctx := errgroup.WithContext(ctx)
+	for _, p := range a.Pipelines {
+		g.Go(func() error {
+			if err := p.Listener.Run(gctx); err != nil {
+				return fmt.Errorf("%s: %w", p.Chain, err)
+			}
+			return nil
+		})
+	}
+	return g.Wait()
 }
 
 // HTTPAddr returns the bound ops server address ("" if disabled/not started).
@@ -193,44 +306,63 @@ func (a *App) HTTPAddr() string {
 func (a *App) Close() error { return a.disp.Close() }
 
 func (a *App) health(ctx context.Context) (bool, any) {
-	st := a.Listener.Status()
-	ok := time.Since(st.LastProgressAt) <= a.cfg.HTTP.StaleAfter.D()
+	ok := true
+	statuses := make(map[string]listener.Status, len(a.Pipelines))
+	for _, p := range a.Pipelines {
+		st := p.Listener.Status()
+		if time.Since(st.LastProgressAt) > a.cfg.HTTP.StaleAfter.D() {
+			ok = false
+		}
+		statuses[p.Chain] = st
+	}
+	var pgErr string
 	if a.pg != nil {
 		pctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		if err := a.pg.Ping(pctx); err != nil {
 			ok = false
-			st.LastError = "postgres: " + err.Error()
+			pgErr = "postgres: " + err.Error()
 		}
 	}
-	return ok, st
-}
-
-func (a *App) cursorDesc() string {
-	switch {
-	case a.opts.Backfill:
-		return "memory (backfill)"
-	case a.pg != nil:
-		return "postgres:" + a.cfg.Sinks.Postgres.CursorName
-	default:
-		return "file:" + a.cfg.Cursor.File
+	if len(a.Pipelines) == 1 { // unchanged single-chain shape
+		st := statuses[a.Pipelines[0].Chain]
+		if pgErr != "" {
+			st.LastError = pgErr
+		}
+		return ok, st
 	}
+	out := map[string]any{"chains": statuses}
+	if pgErr != "" {
+		out["last_error"] = pgErr
+	}
+	return ok, out
 }
 
-// canonicalAddresses converts validated config addresses to base58.
-func canonicalAddresses(in []string) []string {
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		if a, err := tron.ParseAddress(s); err == nil {
-			out = append(out, a.String())
+// staticAddresses returns the canonical static watch addresses of the enabled chains.
+func staticAddresses(cfg config.Config, chains []string) []string {
+	var out []string
+	for _, c := range chains {
+		list := cfg.Filter.WatchAddresses
+		if c == model.ChainTON {
+			list = cfg.TON.WatchAddresses
+		}
+		for _, s := range list {
+			if n, err := chainaddr.Normalize(c, s); err == nil {
+				out = append(out, n)
+			}
 		}
 	}
 	return out
 }
 
-func staticFilterConfig(cfg config.Config, minAmount *big.Int) filter.Config {
+func staticFilterConfig(cfg config.Config, c string, minAmount *big.Int) filter.Config {
+	addrs := cfg.Filter.WatchAddresses
+	if c == model.ChainTON {
+		addrs = cfg.TON.WatchAddresses
+	}
 	return filter.Config{
-		WatchAddresses: cfg.Filter.WatchAddresses,
+		Chain:          c,
+		WatchAddresses: addrs,
 		Direction:      filter.Direction(cfg.Filter.Direction),
 		MinAmount:      minAmount,
 		Mode:           filter.Mode(cfg.Filter.Mode),
@@ -242,8 +374,8 @@ func staticFilterConfig(cfg config.Config, minAmount *big.Int) filter.Config {
 // watch_addresses. With the admin API enabled the watch rule stays active
 // even when the list is empty, so removing the last deposit address never
 // turns the listener into a firehose.
-func buildFilter(ctx context.Context, cfg config.Config, minAmount *big.Int, src watch.Source, log *slog.Logger) (listener.Matcher, *filter.Dynamic, error) {
-	fCfg := staticFilterConfig(cfg, minAmount)
+func buildFilter(ctx context.Context, cfg config.Config, c string, minAmount *big.Int, src watch.Source, log *slog.Logger) (listener.Matcher, *filter.Dynamic, error) {
+	fCfg := staticFilterConfig(cfg, c, minAmount)
 	if src == nil {
 		f, err := filter.New(fCfg)
 		return f, nil, err

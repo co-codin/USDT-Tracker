@@ -10,3 +10,8 @@
 {{- fail "secrets.apiToken must be at least 16 characters (e.g. openssl rand -hex 32)" }}
 {{- end }}
 {{- end }}
+{{- range (.Values.config.chains | default (list "tron")) }}
+{{- if not (has . (list "tron" "ton")) }}
+{{- fail (printf "config.chains: unknown chain %q (want tron|ton)" .) }}
+{{- end }}
+{{- end }}

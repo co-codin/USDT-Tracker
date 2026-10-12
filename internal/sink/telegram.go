@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain/ton"
 	"github.com/co-codin/USDT-Tracker/internal/model"
 	"github.com/co-codin/USDT-Tracker/internal/retry"
 )
@@ -31,9 +32,12 @@ type TelegramConfig struct {
 	MaxPerBlock int
 	APIBase     string // default https://api.telegram.org
 	ExplorerURL string // default https://tronscan.org/#/transaction/
-	MaxRetries  int
-	Backoff     retry.Backoff
-	HTTPClient  *http.Client
+	// TONExplorerURL is the transaction link prefix for TON transfers
+	// (default https://tonviewer.com/transaction/, takes the hex hash).
+	TONExplorerURL string
+	MaxRetries     int
+	Backoff        retry.Backoff
+	HTTPClient     *http.Client
 }
 
 // Telegram sends human-friendly alerts via the Telegram Bot API.
@@ -53,6 +57,9 @@ func NewTelegram(cfg TelegramConfig) (*Telegram, error) {
 	}
 	if cfg.ExplorerURL == "" {
 		cfg.ExplorerURL = "https://tronscan.org/#/transaction/"
+	}
+	if cfg.TONExplorerURL == "" {
+		cfg.TONExplorerURL = "https://tonviewer.com/transaction/"
 	}
 	if cfg.MaxPerBlock <= 0 {
 		cfg.MaxPerBlock = 10
@@ -87,7 +94,11 @@ func (t *Telegram) Send(ctx context.Context, b Batch) error {
 		shown = alerts[:t.cfg.MaxPerBlock]
 	}
 	for _, tr := range shown {
-		if err := t.sendMessage(ctx, FormatTelegram(tr, t.cfg.ExplorerURL)); err != nil {
+		explorer := t.cfg.ExplorerURL
+		if tr.ChainName() == model.ChainTON {
+			explorer = t.cfg.TONExplorerURL
+		}
+		if err := t.sendMessage(ctx, FormatTelegram(tr, explorer)); err != nil {
 			return err
 		}
 	}
@@ -118,11 +129,26 @@ func FormatTelegram(tr model.Transfer, explorer string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "<b>%s</b>\n", html.EscapeString(title))
 	fmt.Fprintf(&sb, "💵 <b>%s %s</b>\n", model.HumanizeUnits(tr.Amount, tr.Decimals, 2), html.EscapeString(tr.Symbol))
-	fmt.Fprintf(&sb, "From: <code>%s</code>\n", html.EscapeString(tr.From))
-	fmt.Fprintf(&sb, "To:   <code>%s</code>\n", html.EscapeString(tr.To))
-	fmt.Fprintf(&sb, "Block: %d · %s\n", tr.BlockNumber, tr.BlockTime.UTC().Format("2006-01-02 15:04:05 UTC"))
+	from, to, blockWord := tr.From, tr.To, "Block"
+	if tr.ChainName() == model.ChainTON { // show the wallet-style UQ… form
+		from, to, blockWord = ton.FriendlyFromRaw(from), ton.FriendlyFromRaw(to), "TON masterchain block"
+	}
+	fmt.Fprintf(&sb, "From: <code>%s</code>\n", html.EscapeString(from))
+	fmt.Fprintf(&sb, "To:   <code>%s</code>\n", html.EscapeString(to))
+	if tr.Memo != "" {
+		fmt.Fprintf(&sb, "Memo: <code>%s</code>\n", html.EscapeString(truncRunes(tr.Memo, 200)))
+	}
+	fmt.Fprintf(&sb, "%s: %d · %s\n", blockWord, tr.BlockNumber, tr.BlockTime.UTC().Format("2006-01-02 15:04:05 UTC"))
 	fmt.Fprintf(&sb, "Tx: <a href=\"%s%s\">%s…%s</a>", html.EscapeString(explorer), html.EscapeString(tr.TxID), html.EscapeString(short(tr.TxID, 8)), html.EscapeString(tail(tr.TxID, 6)))
 	return sb.String()
+}
+
+func truncRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 func short(s string, n int) string {

@@ -242,3 +242,52 @@ func TestStorageErrorsAre500(t *testing.T) {
 		}
 	}
 }
+
+func TestAPITONAddresses(t *testing.T) {
+	store := NewMemoryStore()
+	c := newClient(t, APIConfig{Token: token, Store: store, Chains: []string{"tron", "ton"}})
+	const raw = "0:9db2cae853cf2db870ea06d1e8286f202cd9ad689dfc74b98195520d06495859"
+	code, body, _ := c.do("POST", "/v1/addresses", bearer, `{"address":"UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg","label":"shop"}`)
+	if code != http.StatusCreated || !strings.Contains(body, `"chain":"ton"`) || !strings.Contains(body, raw) {
+		t.Fatalf("add ton: %d %s", code, body)
+	}
+	// same account in another spelling → conflict
+	if code, body, _ := c.do("POST", "/v1/addresses", bearer, `{"chain":"ton","address":"0:9DB2CAE853CF2DB870EA06D1E8286F202CD9AD689DFC74B98195520D06495859"}`); code != http.StatusConflict {
+		t.Fatalf("dup: %d %s", code, body)
+	}
+	if code, body, _ := c.do("POST", "/v1/addresses", bearer, `{"address":"`+alice+`"}`); code != http.StatusCreated || !strings.Contains(body, `"chain":"tron"`) {
+		t.Fatalf("add tron: %d %s", code, body)
+	}
+	for name, b := range map[string]string{
+		"tron addr as ton": `{"chain":"ton","address":"` + alice + `"}`,
+		"ton addr as tron": `{"chain":"tron","address":"` + raw + `"}`,
+		"unknown chain":    `{"chain":"eth","address":"` + alice + `"}`,
+		"bad ton checksum": `{"address":"UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEh"}`,
+	} {
+		if code, body, _ := c.do("POST", "/v1/addresses", bearer, b); code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s", name, code, body)
+		}
+	}
+	code, body, _ = c.do("GET", "/v1/addresses?chain=ton", bearer, "")
+	if code != 200 || strings.Count(body, `"chain":"ton"`) != 1 || strings.Contains(body, alice) {
+		t.Fatalf("list ton: %d %s", code, body)
+	}
+	if code, _, _ := c.do("GET", "/v1/addresses?chain=eth", bearer, ""); code != http.StatusBadRequest {
+		t.Errorf("bad chain filter: %d", code)
+	}
+	if code, body, _ := c.do("DELETE", "/v1/addresses/UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg", bearer, ""); code != http.StatusNoContent {
+		t.Fatalf("delete friendly: %d %s", code, body)
+	}
+	if code, body, _ := c.do("DELETE", "/v1/addresses/"+raw, bearer, ""); code != http.StatusNotFound {
+		t.Fatalf("delete raw again: %d %s", code, body)
+	}
+	if all, _ := store.ListWatches(context.Background()); len(all) != 1 || all[0].Chain != "tron" {
+		t.Fatalf("after delete %+v", all)
+	}
+
+	// TON disabled on this listener → 400
+	c2 := newClient(t, APIConfig{Token: token, Store: NewMemoryStore(), Chains: []string{"tron"}})
+	if code, body, _ := c2.do("POST", "/v1/addresses", bearer, `{"address":"`+raw+`"}`); code != http.StatusBadRequest || !strings.Contains(body, "not enabled") {
+		t.Errorf("disabled chain: %d %s", code, body)
+	}
+}

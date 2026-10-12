@@ -21,12 +21,12 @@ var _ watch.Store = (*WatchStore)(nil)
 // Watchlist returns the runtime watch-list store backed by this database.
 func (s *Store) Watchlist() *WatchStore { return &WatchStore{pool: s.pool} }
 
-const watchCols = `address, label, direction, enabled, created_at`
+const watchCols = `chain, address, label, direction, enabled, created_at`
 
 func scanWatches(rows pgx.Rows) ([]watch.Entry, error) {
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (watch.Entry, error) {
 		var e watch.Entry
-		err := r.Scan(&e.Address, &e.Label, &e.Direction, &e.Enabled, &e.CreatedAt)
+		err := r.Scan(&e.Chain, &e.Address, &e.Label, &e.Direction, &e.Enabled, &e.CreatedAt)
 		e.CreatedAt = e.CreatedAt.UTC()
 		return e, err
 	})
@@ -59,9 +59,12 @@ func (w *WatchStore) AddWatch(ctx context.Context, e watch.Entry) (watch.Entry, 
 	if e.Direction == "" {
 		e.Direction = watch.DirectionBoth
 	}
-	rows, err := w.pool.Query(ctx, `INSERT INTO watch_addresses (address, label, direction, enabled)
-		VALUES ($1, $2, $3, $4) ON CONFLICT (address) DO NOTHING RETURNING `+watchCols,
-		e.Address, e.Label, e.Direction, e.Enabled)
+	if e.Chain == "" {
+		e.Chain = watch.ChainTron
+	}
+	rows, err := w.pool.Query(ctx, `INSERT INTO watch_addresses (chain, address, label, direction, enabled)
+		VALUES ($1, $2, $3, $4, $5) ON CONFLICT (address) DO NOTHING RETURNING `+watchCols,
+		e.Chain, e.Address, e.Label, e.Direction, e.Enabled)
 	if err != nil {
 		return watch.Entry{}, fmt.Errorf("postgres: insert watch address: %w", err)
 	}

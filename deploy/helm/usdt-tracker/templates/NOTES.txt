@@ -1,4 +1,10 @@
 usdt-tracker {{ .Chart.AppVersion }} is deployed as {{ include "usdt-tracker.fullname" . }} (namespace {{ .Release.Namespace }}).
+Chains: {{ join "," (.Values.config.chains | default (list "tron")) }}
+{{- if and (has "ton" (.Values.config.chains | default (list))) (not (or .Values.secrets.toncenterApiKey .Values.secrets.existingSecret)) }}
+
+WARNING: TON is enabled without a toncenter API key: keyless toncenter (~1 req/s) cannot
+keep up with the TON masterchain. Set secrets.toncenterApiKey and config.ton.rps=9.
+{{- end }}
 
 Health / metrics:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "usdt-tracker.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
@@ -15,7 +21,7 @@ address API (/v1/addresses) answers 503. Enable postgresql.enabled or externalDa
 Admin API (bearer token from secret {{ include "usdt-tracker.secretName" . }}, key API_TOKEN):
   TOKEN=$(kubectl -n {{ .Release.Namespace }} get secret {{ include "usdt-tracker.secretName" . }} -o jsonpath='{.data.API_TOKEN}' | base64 -d)
   curl -s -X POST localhost:{{ .Values.service.port }}/v1/addresses -H "Authorization: Bearer $TOKEN" \
-    -H 'Content-Type: application/json' -d '{"address":"T...","label":"order 1"}'
+    -H 'Content-Type: application/json' -d '{"address":"T...","label":"order 1"}'   # or a TON address: "UQ…" / "0:<hex>"
 {{- else }}
 
 Admin API is DISABLED (no API token). Enable it with

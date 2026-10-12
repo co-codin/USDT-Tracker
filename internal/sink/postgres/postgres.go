@@ -121,8 +121,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 func (s *Store) Name() string { return "postgres" }
 
 const insertSQL = `INSERT INTO trc20_transfers
-	(tx_id, log_index, block_number, block_time, contract, symbol, from_address, to_address, amount_raw, amount, reasons)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::numeric, $10::numeric, $11)
+	(tx_id, log_index, block_number, block_time, contract, symbol, from_address, to_address, amount_raw, amount, reasons, chain, memo)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::numeric, $10::numeric, $11, $12, $13)
 	ON CONFLICT (tx_id, log_index) DO NOTHING`
 
 // Send inserts the batch in one transaction; duplicates are ignored.
@@ -135,16 +135,47 @@ func (s *Store) Send(ctx context.Context, b sink.Batch) error {
 				reasons = []string{}
 			}
 			batch.Queue(insertSQL, t.TxID, t.LogIndex, t.BlockNumber, t.BlockTime, t.Contract, t.Symbol,
-				t.From, t.To, t.Amount.String(), t.AmountDecimal(), reasons)
+				t.From, t.To, t.Amount.String(), t.AmountDecimal(), reasons, t.ChainName(), nullable(t.Memo))
 		}
 		return tx.SendBatch(ctx, batch).Close()
 	})
 }
 
+func nullable(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// Cursor returns a cursor.Store for another named cursor in the same
+// database (e.g. one per chain).
+func (s *Store) Cursor(name string) cursor.Store { return namedCursor{s: s, name: name} }
+
+type namedCursor struct {
+	s    *Store
+	name string
+}
+
+func (n namedCursor) Load(ctx context.Context) (cursor.State, error) { return n.s.load(ctx, n.name) }
+func (n namedCursor) Save(ctx context.Context, st cursor.State) error {
+	return n.s.save(ctx, n.name, st)
+}
+
 // Load implements cursor.Store.
-func (s *Store) Load(ctx context.Context) (cursor.State, error) {
+func (s *Store) Load(ctx context.Context) (cursor.State, error) { return s.load(ctx, s.cursorName) }
+
+// Save implements cursor.Store.
+func (s *Store) Save(ctx context.Context, st cursor.State) error {
+	return s.save(ctx, s.cursorName, st)
+}
+
+// CursorName returns the default cursor name.
+func (s *Store) CursorName() string { return s.cursorName }
+
+func (s *Store) load(ctx context.Context, name string) (cursor.State, error) {
 	var st cursor.State
-	err := s.pool.QueryRow(ctx, `SELECT last_block, updated_at FROM listener_cursor WHERE name=$1`, s.cursorName).
+	err := s.pool.QueryRow(ctx, `SELECT last_block, updated_at FROM listener_cursor WHERE name=$1`, name).
 		Scan(&st.LastBlock, &st.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cursor.State{}, nil
@@ -155,11 +186,10 @@ func (s *Store) Load(ctx context.Context) (cursor.State, error) {
 	return st, nil
 }
 
-// Save implements cursor.Store.
-func (s *Store) Save(ctx context.Context, st cursor.State) error {
+func (s *Store) save(ctx context.Context, name string, st cursor.State) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO listener_cursor(name, last_block, updated_at) VALUES ($1, $2, $3)
 		ON CONFLICT (name) DO UPDATE SET last_block = EXCLUDED.last_block, updated_at = EXCLUDED.updated_at`,
-		s.cursorName, st.LastBlock, st.UpdatedAt)
+		name, st.LastBlock, st.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("postgres: save cursor: %w", err)
 	}

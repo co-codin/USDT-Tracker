@@ -1,5 +1,6 @@
-// Command listener watches TRC-20 (USDT by default) Transfer events on TRON
-// and forwards matching transfers to the configured sinks.
+// Command listener watches USDT transfers — TRC-20 Transfer events on TRON
+// and/or USD₮ jetton transfers on TON — and forwards matching transfers to
+// the configured sinks.
 //
 // It is strictly read-only: it never handles private keys and never signs or
 // broadcasts transactions.
@@ -38,6 +39,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		configPath  = fs.String("config", defaultConfigPath(), "path to YAML config (env: CONFIG_FILE)")
 		from        = fs.Int64("from", 0, "backfill: first block (inclusive); runs once and exits, cursor untouched")
 		to          = fs.Int64("to", 0, "backfill: last block (inclusive, default = -from)")
+		chainName   = fs.String("chain", "", "backfill: chain to backfill (tron|ton) when several are enabled; TON blocks are masterchain seqnos")
 		showVersion = fs.Bool("version", false, "print version and exit")
 		healthcheck = fs.Bool("healthcheck", false, "query the local /healthz endpoint and exit 0/1 (for container health checks)")
 	)
@@ -47,6 +49,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if *showVersion {
 		fmt.Fprintln(stdout, "tron-usdt-listener", version)
 		return 0
+	}
+	if *chainName != "" && *from == 0 {
+		fmt.Fprintln(stderr, "-chain requires -from")
+		return 2
 	}
 	if *to > 0 && *from == 0 {
 		fmt.Fprintln(stderr, "-to requires -from")
@@ -80,7 +86,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}()
 	defer func() { close(exited); wg.Wait() }()
 
-	a, err := app.New(ctx, cfg, log, app.Options{Version: version, Backfill: *from > 0, Stdout: stdout})
+	a, err := app.New(ctx, cfg, log, app.Options{Version: version, Backfill: *from > 0, BackfillChain: *chainName, Stdout: stdout})
 	if err != nil {
 		log.Error("startup failed", "err", err)
 		return 1

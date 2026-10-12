@@ -328,16 +328,16 @@ func TestE2E_RangeConfirmationsRetriesAndOutputs(t *testing.T) {
 		t.Errorf("block 990 requested %d times, want >= 2 (empty response must be re-fetched)", n)
 	}
 	m := a.Metrics
-	if v := testutil.ToFloat64(m.RPCRetries.WithLabelValues(txInfoPath, "rate_limited")); v != 2 {
+	if v := testutil.ToFloat64(m.RPCRetries.WithLabelValues("tron", txInfoPath, "rate_limited")); v != 2 {
 		t.Errorf("rate_limited retries = %v, want 2", v)
 	}
-	if v := testutil.ToFloat64(m.RPCRetries.WithLabelValues(txInfoPath, "500")) + testutil.ToFloat64(m.RPCRetries.WithLabelValues(txInfoPath, "502")); v != 2 {
+	if v := testutil.ToFloat64(m.RPCRetries.WithLabelValues("tron", txInfoPath, "500")) + testutil.ToFloat64(m.RPCRetries.WithLabelValues("tron", txInfoPath, "502")); v != 2 {
 		t.Errorf("5xx retries = %v, want 2", v)
 	}
-	if v := testutil.ToFloat64(m.BlockErrors); v < 1 {
+	if v := testutil.ToFloat64(m.BlockErrors.WithLabelValues("tron")); v < 1 {
 		t.Errorf("block_fetch_errors_total = %v, want >= 1 (inconsistent empty block)", v)
 	}
-	if v := testutil.ToFloat64(m.TransfersDecoded); int(v) != len(want) {
+	if v := testutil.ToFloat64(m.TransfersDecoded.WithLabelValues("tron")); int(v) != len(want) {
 		t.Errorf("transfers_decoded_total = %v, want %d", v, len(want))
 	}
 	if readCursor(t, cfg.Cursor.File) < 995 {

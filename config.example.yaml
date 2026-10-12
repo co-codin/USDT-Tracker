@@ -1,10 +1,14 @@
-# tron-usdt-listener configuration.
+# USDT-Tracker (tron-usdt-listener) configuration.
 # Copy to config.yaml and adjust. Every value can be overridden by an
 # environment variable (see README "Configuration"); keep secrets in env.
 
 log:
   level: info          # debug | info | warn | error
   format: json         # json | text   (application logs go to stderr)
+
+# Chains to listen on: [tron] (default), [ton], or [tron, ton] (both run
+# concurrently with their own cursor; sinks, filter rules and the admin API are shared).
+chains: [tron]           # env CHAINS=tron,ton
 
 tron:
   api_url: https://api.trongrid.io   # any TRON full node HTTP API (TronGrid compatible)
@@ -28,10 +32,33 @@ listener:
   dispatch_timeout: 30s  # per delivery attempt; an in-flight block is finished on shutdown
 
 cursor:
-  file: ./data/cursor.json   # ignored when the postgres sink is enabled (cursor stored in DB)
+  file: ./data/cursor.json   # TRON cursor; ignored when the postgres sink is enabled (cursor stored in DB)
+
+# TON (used when chains contains ton). Read-only, via the public toncenter v3
+# index API. Block numbers on TON are masterchain seqnos (~2.4 blocks/s).
+ton:
+  api_url: https://toncenter.com/api/v3
+  api_key: ""                # env TONCENTER_API_KEY. Without a key toncenter allows ~1 req/s, too slow
+                             # for mainnet head (2 requests per masterchain block). Free key: @tonapibot
+  timeout: 15s
+  rps: 1                     # raise to ~9 with a free key (10 rps plan)
+  max_retries: 8
+  jetton_master: EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs   # official USD₮ on TON
+  symbol: USDT
+  decimals: 6
+  # TON addresses to watch (raw 0:<hex> or user-friendly EQ…/UQ…); filter.direction,
+  # filter.min_amount and filter.mode apply. Runtime TON addresses come from /v1/addresses.
+  watch_addresses: []
+  confirmations: 3           # masterchain blocks are final once indexed; small margin for indexer lag
+  poll_interval: 1s
+  start_block: 0             # same semantics as listener.start_block, in masterchain seqnos
+  batch_size: 20
+  concurrency: 2
+  cursor_file: ./data/cursor-ton.json   # with postgres the cursor is "<cursor_name>:ton" in listener_cursor
 
 filter:
   # Leave watch_addresses empty and min_amount "0" to emit every transfer (firehose).
+  # These are TRON addresses; TON addresses go to ton.watch_addresses.
   watch_addresses: []
   #  - TXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
   direction: both        # both | incoming | outgoing (relative to watched addresses)

@@ -135,6 +135,10 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		"SINK_WEBHOOK_ENABLED": "true", "WEBHOOK_URL": "https://example.invalid/h", "WEBHOOK_SECRET": "ws",
 		"SINK_TELEGRAM_ENABLED": "1", "TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "c", "TELEGRAM_MIN_AMOUNT": "5",
 		"SINK_POSTGRES_ENABLED": "true", "DATABASE_URL": "postgres://x",
+		"CHAINS": "TRON, ton", "TON_API_URL": "https://ton.example/api/v3", "TONCENTER_API_KEY": "tk", "TON_RPS": "9",
+		"TON_JETTON_MASTER":   "0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe",
+		"TON_WATCH_ADDRESSES": "UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg, 0:852443f8599fe6a5da34fe43049ac4e0beb3071bb2bfb56635ea9421287c283a",
+		"TON_CONFIRMATIONS":   "5", "TON_START_BLOCK": "-10", "TON_POLL_INTERVAL": "500ms", "TON_CURSOR_FILE": "/tmp/t.json",
 	}
 	if len(e) != len(EnvVars()) {
 		t.Fatalf("test covers %d env vars, config supports %d", len(e), len(EnvVars()))
@@ -155,6 +159,9 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		c.Sinks.Webhook.Enabled, c.Sinks.Webhook.URL != "", c.Sinks.Webhook.Secret == "ws",
 		c.Sinks.Telegram.Enabled, c.Sinks.Telegram.BotToken == "t", c.Sinks.Telegram.ChatID == "c", c.Sinks.Telegram.MinAmount == "5",
 		c.Sinks.Postgres.Enabled, c.Sinks.Postgres.DSN == "postgres://x",
+		len(c.Chains) == 2 && c.Chains[0] == "tron" && c.Chains[1] == "ton", c.TON.APIURL == "https://ton.example/api/v3",
+		c.TON.APIKey == "tk", c.TON.RPS == 9, c.TON.JettonMaster != "", len(c.TON.WatchAddresses) == 2,
+		c.TON.Confirmations == 5, c.TON.StartBlock == -10, c.TON.PollInterval.D() == 500*time.Millisecond, c.TON.CursorFile == "/tmp/t.json",
 	}
 	for i, ok := range checks {
 		if !ok {
@@ -181,5 +188,46 @@ func TestInvalidEnvValues(t *testing.T) {
 	}
 	if _, err := Load(filepath.Join(t.TempDir(), "missing.yaml"), env(nil)); err == nil {
 		t.Error("missing explicit config file: expected error")
+	}
+}
+
+func TestTONConfig(t *testing.T) {
+	c, err := Load("", env(nil))
+	if err != nil || len(c.Chains) != 1 || c.Chains[0] != "tron" || c.HasChain("ton") {
+		t.Fatalf("default chains %v %v", c.Chains, err)
+	}
+	if c.TON.JettonMaster != "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs" || c.TON.Decimals != 6 || c.TON.APIURL != "https://toncenter.com/api/v3" {
+		t.Fatalf("ton defaults %+v", c.TON)
+	}
+	c, err = Load("", env(map[string]string{"CHAINS": "ton", "TON_WATCH_ADDRESSES": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"}))
+	if err != nil || !c.HasChain("ton") || c.HasChain("tron") {
+		t.Fatalf("ton only: %v %v", c.Chains, err)
+	}
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	_ = os.WriteFile(path, []byte("chains: [tron, ton]\nton:\n  watch_addresses: [\"0:852443f8599fe6a5da34fe43049ac4e0beb3071bb2bfb56635ea9421287c283a\"]\n  confirmations: 1\n"), 0o600)
+	if c, err := Load(path, env(nil)); err != nil || len(c.Chains) != 2 || c.TON.Confirmations != 1 {
+		t.Fatalf("yaml: %+v %v", c.Chains, err)
+	}
+	for name, e := range map[string]map[string]string{
+		"unknown chain":       {"CHAINS": "eth"},
+		"duplicate chain":     {"CHAINS": "ton,ton"},
+		"bad ton watch":       {"CHAINS": "ton", "TON_WATCH_ADDRESSES": "TYGjwWR9qhmGuTbCdGvgoM5Yv7rZPeC2yx"},
+		"bad master":          {"CHAINS": "ton", "TON_JETTON_MASTER": "nope"},
+		"ton rps":             {"CHAINS": "ton", "TON_RPS": "0"},
+		"ton in tron list":    {"FILTER_WATCH_ADDRESSES": "UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg"},
+		"same cursor file":    {"CHAINS": "tron,ton", "CURSOR_FILE": "/tmp/x.json", "TON_CURSOR_FILE": "/tmp/x.json"},
+		"ton min too precise": {"CHAINS": "ton", "FILTER_MIN_AMOUNT": "0.0000001"},
+	} {
+		_, err := Load("", env(e))
+		if err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+		if name == "ton in tron list" && err != nil && !strings.Contains(err.Error(), "ton.watch_addresses") {
+			t.Errorf("hint missing: %v", err)
+		}
+	}
+	// TON settings are not validated while TON is disabled
+	if _, err := Load("", env(map[string]string{"TON_RPS": "0"})); err != nil {
+		t.Errorf("disabled ton validated: %v", err)
 	}
 }

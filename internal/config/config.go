@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain/ton"
 	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
 	"github.com/co-codin/USDT-Tracker/internal/model"
 )
@@ -39,8 +40,12 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 
 // Config is the full application configuration.
 type Config struct {
-	Log      Log      `yaml:"log"`
+	Log Log `yaml:"log"`
+	// Chains lists the chains to listen on: [tron] (default), [ton] or both.
+	// Each chain runs its own listener loop and cursor; sinks are shared.
+	Chains   []string `yaml:"chains"`
 	Tron     Tron     `yaml:"tron"`
+	TON      TON      `yaml:"ton"`
 	Token    Token    `yaml:"token"`
 	Listener Listener `yaml:"listener"`
 	Cursor   Cursor   `yaml:"cursor"`
@@ -71,6 +76,30 @@ type Tron struct {
 	Timeout    Duration `yaml:"timeout"`
 	RPS        float64  `yaml:"rps"`
 	MaxRetries int      `yaml:"max_retries"`
+}
+
+// TON configures the TON listener (toncenter v3 index API). Block numbers
+// on TON are masterchain seqnos.
+type TON struct {
+	APIURL       string   `yaml:"api_url"`
+	APIKey       string   `yaml:"api_key"` // optional toncenter key (TONCENTER_API_KEY)
+	Timeout      Duration `yaml:"timeout"`
+	RPS          float64  `yaml:"rps"`
+	MaxRetries   int      `yaml:"max_retries"`
+	JettonMaster string   `yaml:"jetton_master"` // default: official USD₮ master
+	Symbol       string   `yaml:"symbol"`
+	Decimals     int      `yaml:"decimals"`
+	// WatchAddresses are TON addresses (raw "0:<hex>" or EQ…/UQ…) watched
+	// with filter.direction; filter.min_amount and filter.mode apply too.
+	WatchAddresses []string `yaml:"watch_addresses"`
+	Confirmations  int64    `yaml:"confirmations"`
+	PollInterval   Duration `yaml:"poll_interval"`
+	StartBlock     int64    `yaml:"start_block"`
+	BatchSize      int      `yaml:"batch_size"`
+	Concurrency    int      `yaml:"concurrency"`
+	// CursorFile is the TON file cursor (ignored when the postgres sink is
+	// on: the Postgres cursor "<cursor_name>:ton" is used instead).
+	CursorFile string `yaml:"cursor_file"`
 }
 
 // Token selects the TRC-20 contract (USDT by default).
@@ -159,8 +188,15 @@ type PostgresSink struct {
 // Default returns the built-in defaults.
 func Default() Config {
 	return Config{
-		Log:  Log{Level: "info", Format: "json"},
-		Tron: Tron{APIURL: tron.DefaultBaseURL, Timeout: Duration(15 * time.Second), RPS: 3, MaxRetries: 8},
+		Log:    Log{Level: "info", Format: "json"},
+		Chains: []string{model.ChainTron},
+		Tron:   Tron{APIURL: tron.DefaultBaseURL, Timeout: Duration(15 * time.Second), RPS: 3, MaxRetries: 8},
+		TON: TON{
+			APIURL: ton.DefaultBaseURL, Timeout: Duration(15 * time.Second), RPS: 1, MaxRetries: 8,
+			JettonMaster: ton.USDTMaster, Symbol: "USDT", Decimals: 6,
+			Confirmations: 3, PollInterval: Duration(time.Second), BatchSize: 20, Concurrency: 2,
+			CursorFile: "./data/cursor-ton.json",
+		},
 		Token: Token{
 			Contract: USDTContract, Symbol: "USDT", Decimals: 6,
 		},
@@ -210,6 +246,22 @@ func (c *Config) Validate() error {
 	var errs []error
 	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
 
+	if len(c.Chains) == 0 {
+		add("chains must list at least one of tron, ton")
+	}
+	seenChain := map[string]bool{}
+	for _, ch := range c.Chains {
+		if ch != model.ChainTron && ch != model.ChainTON {
+			add("chains: unknown chain %q (want tron|ton)", ch)
+		}
+		if seenChain[ch] {
+			add("chains: %q listed twice", ch)
+		}
+		seenChain[ch] = true
+	}
+	if c.HasChain(model.ChainTON) {
+		c.validateTON(add)
+	}
 	if _, err := tron.ParseAddress(c.Token.Contract); err != nil {
 		add("token.contract: %v", err)
 	}
@@ -230,6 +282,10 @@ func (c *Config) Validate() error {
 	}
 	for _, a := range c.Filter.WatchAddresses {
 		if _, err := tron.ParseAddress(a); err != nil {
+			if _, terr := ton.ParseAddress(a); terr == nil {
+				add("filter.watch_addresses: %q is a TON address: put it in ton.watch_addresses (TON_WATCH_ADDRESSES)", a)
+				continue
+			}
 			add("filter.watch_addresses: %q: %v", a, err)
 		}
 	}
@@ -276,10 +332,64 @@ func (c *Config) Validate() error {
 	if s.Postgres.Enabled && s.Postgres.DSN == "" {
 		add("sinks.postgres.dsn is required (DATABASE_URL)")
 	}
-	if !s.Postgres.Enabled && c.Cursor.File == "" {
+	if !s.Postgres.Enabled && c.Cursor.File == "" && c.HasChain(model.ChainTron) {
 		add("cursor.file is required when the postgres sink is disabled")
 	}
 	return errors.Join(errs...)
+}
+
+func (c *Config) validateTON(add func(string, ...any)) {
+	t := c.TON
+	if _, err := ton.ParseAddress(t.JettonMaster); err != nil {
+		add("ton.jetton_master: %v", err)
+	}
+	if t.APIURL == "" {
+		add("ton.api_url is required")
+	}
+	if t.Decimals < 0 || t.Decimals > 36 {
+		add("ton.decimals must be between 0 and 36")
+	}
+	if t.RPS <= 0 {
+		add("ton.rps must be > 0")
+	}
+	if t.Confirmations < 0 {
+		add("ton.confirmations must be >= 0")
+	}
+	if t.BatchSize < 1 || t.BatchSize > 1000 {
+		add("ton.batch_size must be between 1 and 1000")
+	}
+	if t.Concurrency < 1 || t.Concurrency > 64 {
+		add("ton.concurrency must be between 1 and 64")
+	}
+	for _, a := range t.WatchAddresses {
+		if _, err := ton.ParseAddress(a); err != nil {
+			add("ton.watch_addresses: %q: %v", a, err)
+		}
+	}
+	if _, err := model.ParseUnits(c.Filter.MinAmount, t.Decimals); err != nil {
+		add("filter.min_amount (ton decimals): %v", err)
+	}
+	if !c.Sinks.Postgres.Enabled && t.CursorFile == "" {
+		add("ton.cursor_file is required when the postgres sink is disabled")
+	}
+	if !c.Sinks.Postgres.Enabled && t.CursorFile == c.Cursor.File && c.HasChain(model.ChainTron) {
+		add("ton.cursor_file must differ from cursor.file")
+	}
+}
+
+// HasChain reports whether chain is enabled.
+func (c *Config) HasChain(chain string) bool {
+	for _, x := range c.Chains {
+		if x == chain {
+			return true
+		}
+	}
+	return false
+}
+
+// TONMinAmount returns the large-transfer threshold in TON jetton units.
+func (c *Config) TONMinAmount() (*big.Int, error) {
+	return model.ParseUnits(c.Filter.MinAmount, c.TON.Decimals)
 }
 
 // MinAmount returns the large-transfer threshold in raw units.
@@ -352,6 +462,26 @@ var envBindings = []envBinding{
 		c.Tron.RPS = f
 		return err
 	}},
+	{"CHAINS", func(c *Config, v string) error {
+		c.Chains = splitList(strings.ToLower(v))
+		return nil
+	}},
+	{"TON_API_URL", str(func(c *Config) *string { return &c.TON.APIURL })},
+	{"TONCENTER_API_KEY", str(func(c *Config) *string { return &c.TON.APIKey })},
+	{"TON_RPS", func(c *Config, v string) error {
+		f, err := strconv.ParseFloat(v, 64)
+		c.TON.RPS = f
+		return err
+	}},
+	{"TON_JETTON_MASTER", str(func(c *Config) *string { return &c.TON.JettonMaster })},
+	{"TON_WATCH_ADDRESSES", func(c *Config, v string) error {
+		c.TON.WatchAddresses = splitList(v)
+		return nil
+	}},
+	{"TON_CONFIRMATIONS", integer(func(c *Config) *int64 { return &c.TON.Confirmations })},
+	{"TON_START_BLOCK", integer(func(c *Config) *int64 { return &c.TON.StartBlock })},
+	{"TON_POLL_INTERVAL", duration(func(c *Config) *Duration { return &c.TON.PollInterval })},
+	{"TON_CURSOR_FILE", str(func(c *Config) *string { return &c.TON.CursorFile })},
 	{"TOKEN_CONTRACT", str(func(c *Config) *string { return &c.Token.Contract })},
 	{"LISTENER_CONFIRMATIONS", integer(func(c *Config) *int64 { return &c.Listener.Confirmations })},
 	{"LISTENER_START_BLOCK", integer(func(c *Config) *int64 { return &c.Listener.StartBlock })},
@@ -360,12 +490,7 @@ var envBindings = []envBinding{
 	{"LISTENER_CONCURRENCY", intVal(func(c *Config) *int { return &c.Listener.Concurrency })},
 	{"CURSOR_FILE", str(func(c *Config) *string { return &c.Cursor.File })},
 	{"FILTER_WATCH_ADDRESSES", func(c *Config, v string) error {
-		c.Filter.WatchAddresses = nil
-		for _, a := range strings.Split(v, ",") {
-			if a = strings.TrimSpace(a); a != "" {
-				c.Filter.WatchAddresses = append(c.Filter.WatchAddresses, a)
-			}
-		}
+		c.Filter.WatchAddresses = splitList(v)
 		return nil
 	}},
 	{"FILTER_DIRECTION", str(func(c *Config) *string { return &c.Filter.Direction })},
@@ -384,6 +509,16 @@ var envBindings = []envBinding{
 	{"TELEGRAM_MIN_AMOUNT", str(func(c *Config) *string { return &c.Sinks.Telegram.MinAmount })},
 	{"SINK_POSTGRES_ENABLED", boolean(func(c *Config) *bool { return &c.Sinks.Postgres.Enabled })},
 	{"DATABASE_URL", str(func(c *Config) *string { return &c.Sinks.Postgres.DSN })},
+}
+
+func splitList(v string) []string {
+	var out []string
+	for _, a := range strings.Split(v, ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // EnvVars returns the names of all supported environment variables.
