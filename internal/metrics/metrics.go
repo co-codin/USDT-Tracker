@@ -37,6 +37,8 @@ type Metrics struct {
 	SinkDeliveries *prometheus.CounterVec
 	SinkTransfers  *prometheus.CounterVec
 	SinkDuration   *prometheus.HistogramVec
+
+	LargeAlerts *prometheus.CounterVec // status: sent|failed|dropped
 }
 
 // Chain is the per-chain view of Metrics used by one listener.
@@ -113,7 +115,9 @@ func New() *Metrics {
 	m.SinkTransfers = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: ns, Name: "sink_transfers_total", Help: "Transfers delivered by sink and status."}, []string{"sink", "status"})
 	m.SinkDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: ns, Name: "sink_delivery_duration_seconds", Help: "Sink delivery latency.", Buckets: prometheus.DefBuckets}, []string{"sink"})
 
-	for _, c := range []prometheus.Collector{m.HeadBlock, m.SafeHeadBlock, m.CursorBlock, m.LagBlocks, m.LastProcessedTime,
+	m.LargeAlerts = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: ns, Name: "large_transfer_alerts_total", Help: "Large-transfer channel alerts by status (sent|failed|dropped)."}, []string{"status"})
+
+	for _, c := range []prometheus.Collector{m.LargeAlerts, m.HeadBlock, m.SafeHeadBlock, m.CursorBlock, m.LagBlocks, m.LastProcessedTime,
 		m.BlocksProcessed, m.TransfersDecoded, m.TransfersMatched, m.DecodeErrors, m.BlockErrors, m.DispatchRetries,
 		m.RPCRequests, m.RPCDuration, m.RPCRetries, m.SinkDeliveries, m.SinkTransfers, m.SinkDuration} {
 		f(c)

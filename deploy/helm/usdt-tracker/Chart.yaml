@@ -4,7 +4,7 @@ description: >-
   Read-only USDT transfer listener for TRON (TRC-20), TON (USD₮ jetton) and Ethereum (ERC-20) with a runtime watch-list API
   (/v1/addresses), Prometheus metrics and optional bundled PostgreSQL.
 type: application
-version: 0.3.0
+version: 0.4.0
 appVersion: "latest"
 home: https://github.com/co-codin/USDT-Tracker
 sources:

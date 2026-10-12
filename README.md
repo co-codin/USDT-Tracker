@@ -514,6 +514,37 @@ Watched addresses get `📥 Incoming USDT` / `📤 Outgoing USDT` titles. Messag
 per block (the rest are summarised). Create a bot with [@BotFather](https://t.me/BotFather), add it to
 your chat and set `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`.
 
+### Large-transfer channel (whale alerts)
+
+A separate, watch-list-independent rule that posts **every transfer ≥ threshold (default 100,000 USDT)
+on every enabled chain** to a Telegram channel – a ready-made "USDT whale alerts" channel to grow an
+audience and show off the project:
+
+```bash
+LARGE_ALERTS_ENABLED=true LARGE_ALERTS_CHAT_ID=@usdt_whales \
+LARGE_ALERTS_BOT_TOKEN=<bot token, or reuse TELEGRAM_BOT_TOKEN> LARGE_ALERTS_THRESHOLD=100000 \
+LARGE_ALERTS_FOOTER='via <a href="https://github.com/co-codin/USDT-Tracker">USDT-Tracker</a>' \
+CHAINS=tron,ton,eth ./bin/tron-usdt-listener
+```
+
+```
+🐋 1,250,000 USDT on Ethereum
+From: 0x5aAe…eAed
+To: 0xfB69…d359
+Etherscan · 2026-10-12 21:25 UTC
+```
+
+- Fed with *all* decoded transfers of each confirmed block (before the filter), so it works even with
+  an empty watch list or a payment-only filter. Not triggered by `-from/-to` backfills.
+- Links: tronscan (TRON), tonviewer (TON, wallet-style `UQ…` addresses + memo), etherscan (Ethereum,
+  EIP-55 addresses).
+- **Telegram limits:** at most one message per `interval` (default 3 s = 20/min, Telegram's per-channel
+  limit); a burst is batched into one message listing up to `max_per_message` transfers (largest first).
+  `429 retry_after` is honoured. Pending alerts live in a bounded queue (`queue_size`, oldest dropped);
+  restarts don't re-alert recently seen transfers. Best-effort – it never blocks the listeners.
+- Add the bot to the channel as an **administrator** (post messages). Metric:
+  `tron_listener_large_transfer_alerts_total{status="sent|failed|dropped"}`.
+
 ### PostgreSQL
 
 Migrations are embedded and applied automatically (guarded by an advisory lock).
@@ -545,11 +576,11 @@ and `ok` is false if any chain is stalled.
 The Docker image uses `listener -healthcheck` (no curl in distroless).
 
 Selected metrics (`tron_listener_*`, name kept for compatibility; per-chain ones carry a `chain`
-label, `tron` or `ton`): `head_block`, `safe_head_block`, `cursor_block`, `lag_blocks`,
+label, `tron`, `ton` or `eth`): `head_block`, `safe_head_block`, `cursor_block`, `lag_blocks`,
 `blocks_processed_total`, `transfers_decoded_total`, `transfers_matched_total{chain,reason}`,
 `rpc_requests_total{chain,endpoint,status}`, `rpc_request_duration_seconds`, `rpc_retries_total{chain,endpoint,reason}`,
 `sink_deliveries_total{sink,status}`, `sink_delivery_duration_seconds`, `dispatch_retries_total`,
-`decode_errors_total`, `block_fetch_errors_total`.
+`decode_errors_total`, `block_fetch_errors_total`, `large_transfer_alerts_total{status}`.
 
 ## Testing
 
@@ -633,6 +664,12 @@ TON 地址写在 `ton.watch_addresses` / `TON_WATCH_ADDRESSES`，也可以通过
 `ETH_RPC_URL` 配置（常带服务商 key，按密钥处理，日志里只显示域名），默认是免费的 publicnode
 公共节点。地址统一存成小写 `0x…`，配置和 API 接受小写或正确的 EIP-55 校验格式。
 
+**大额转账提醒频道：** 设置 `LARGE_ALERTS_ENABLED=true`、`LARGE_ALERTS_CHAT_ID=@你的频道` 后，所有已启用
+链上 ≥ 阈值（默认 100000 USDT，`LARGE_ALERTS_THRESHOLD`）的转账都会自动发到 Telegram 频道，和监听地址
+无关，附 tronscan / tonviewer / etherscan 链接。按 Telegram 限制控速（默认每 3 秒最多一条，突发时
+合并成一条），429 自动等待重试，队列有上限，不会拖慢监听。可用 `LARGE_ALERTS_FOOTER` 加项目链接做曝光。
+机器人需要是频道管理员。
+
 ## Кратко на русском
 
 **tron-usdt-listener** — **read-only** сервис на Go для отслеживания переводов USDT (TRC-20) в сети
@@ -659,6 +696,12 @@ TRON. Он обходит блоки по диапазонам, декодиру
 `eth_getLogs` по диапазонам блоков с автоматическим делением, ретраи при 429). Адрес RPC — `ETH_RPC_URL`
 (считается секретом, в логах только хост); по умолчанию бесплатный узел publicnode. Адреса хранятся
 в нижнем регистре `0x…`, на входе принимается нижний регистр или корректная контрольная сумма EIP-55.
+
+**Канал крупных переводов:** `LARGE_ALERTS_ENABLED=true` и `LARGE_ALERTS_CHAT_ID=@канал` — каждый
+перевод ≥ порога (по умолчанию 100000 USDT, `LARGE_ALERTS_THRESHOLD`) в любой включённой сети
+публикуется в Telegram-канал независимо от списка адресов, со ссылками на tronscan / tonviewer / etherscan.
+Скорость ограничена под лимиты Telegram (по умолчанию не чаще раза в 3 с, всплески объединяются в одно
+сообщение), 429 обрабатывается, очередь ограничена. Бот должен быть администратором канала.
 
 **Адреса во время работы (API v1):** при включённом Postgres-синке и заданном `API_TOKEN` адреса
 можно добавлять и удалять без перезапуска через `GET/POST/DELETE /v1/addresses`

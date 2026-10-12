@@ -36,7 +36,14 @@ type Config struct {
 	DispatchTimeout time.Duration // per delivery attempt; in-flight blocks finish on shutdown (default 30s)
 	Backoff         retry.Backoff // backoff for loop-level errors
 	Chain           string        // chain name for metrics/logs (default "tron")
+	// Taps see every decoded transfer of each confirmed block before
+	// filtering (e.g. the large-transfer alert channel). They must not block;
+	// they are not called in backfill mode.
+	Taps []Tap
 }
+
+// Tap observes unfiltered blocks.
+type Tap func(ctx context.Context, b chain.Block)
 
 func (c Config) chainName() string {
 	if c.Chain == "" {
@@ -278,6 +285,11 @@ func (l *Listener) process(ctx context.Context, b chain.Block, persist bool) err
 	if r, ok := l.filter.(Refresher); ok {
 		if err := r.Refresh(ctx); err != nil {
 			return fmt.Errorf("block %d: %w", b.Number, err)
+		}
+	}
+	if persist {
+		for _, tap := range l.cfg.Taps {
+			tap(ctx, b)
 		}
 	}
 	matched := l.filter.Apply(b.Transfers)

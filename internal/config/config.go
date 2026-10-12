@@ -55,6 +55,7 @@ type Config struct {
 	HTTP     HTTP     `yaml:"http"`
 	API      API      `yaml:"api"`
 	Sinks    Sinks    `yaml:"sinks"`
+	Alerts   Alerts   `yaml:"alerts"`
 }
 
 // MinAPITokenLen is the minimum accepted admin API token length.
@@ -206,6 +207,34 @@ type TelegramSink struct {
 	APIBase     string `yaml:"api_base"` // default https://api.telegram.org (override for proxies/tests)
 }
 
+// Alerts groups chat alerts that are independent of the watch list.
+type Alerts struct {
+	LargeTransfers LargeTransferAlerts `yaml:"large_transfers"`
+}
+
+// LargeTransferAlerts posts every transfer >= Threshold on any enabled chain
+// to a Telegram channel (the bot must be an admin of the channel).
+type LargeTransferAlerts struct {
+	Enabled bool `yaml:"enabled"`
+	// BotToken defaults to sinks.telegram.bot_token (TELEGRAM_BOT_TOKEN).
+	BotToken      string   `yaml:"bot_token"`
+	ChatID        string   `yaml:"chat_id"`   // e.g. @usdt_whales or -100…
+	Threshold     string   `yaml:"threshold"` // token units, default 100000
+	Interval      Duration `yaml:"interval"`  // min gap between messages, default 3s (20/min)
+	MaxPerMessage int      `yaml:"max_per_message"`
+	QueueSize     int      `yaml:"queue_size"`
+	Footer        string   `yaml:"footer"`   // optional HTML line under every alert
+	APIBase       string   `yaml:"api_base"` // default https://api.telegram.org
+}
+
+// Token returns the bot token for large-transfer alerts.
+func (l LargeTransferAlerts) Token(c *Config) string {
+	if l.BotToken != "" {
+		return l.BotToken
+	}
+	return c.Sinks.Telegram.BotToken
+}
+
 // PostgresSink config.
 type PostgresSink struct {
 	Enabled    bool   `yaml:"enabled"`
@@ -248,6 +277,9 @@ func Default() Config {
 			Telegram: TelegramSink{MaxPerBlock: 10, BestEffort: true},
 			Postgres: PostgresSink{CursorName: "default"},
 		},
+		Alerts: Alerts{LargeTransfers: LargeTransferAlerts{
+			Threshold: "100000", Interval: Duration(3 * time.Second), MaxPerMessage: 10, QueueSize: 1000,
+		}},
 	}
 }
 
@@ -370,6 +402,23 @@ func (c *Config) Validate() error {
 	}
 	if s.Telegram.Enabled && (s.Telegram.BotToken == "" || s.Telegram.ChatID == "") {
 		add("sinks.telegram requires bot_token and chat_id (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)")
+	}
+	if la := c.Alerts.LargeTransfers; la.Enabled {
+		if la.ChatID == "" || la.Token(c) == "" {
+			add("alerts.large_transfers requires chat_id and a bot token (LARGE_ALERTS_CHAT_ID, LARGE_ALERTS_BOT_TOKEN or TELEGRAM_BOT_TOKEN)")
+		}
+		if v, err := model.ParseUnits(la.Threshold, 18); err != nil || v.Sign() <= 0 {
+			add("alerts.large_transfers.threshold must be a positive amount, got %q", la.Threshold)
+		}
+		if la.Interval.D() < 500*time.Millisecond {
+			add("alerts.large_transfers.interval must be >= 500ms (Telegram allows ~20 messages/minute per channel)")
+		}
+		if la.MaxPerMessage < 1 || la.MaxPerMessage > 30 {
+			add("alerts.large_transfers.max_per_message must be between 1 and 30")
+		}
+		if la.QueueSize < 1 {
+			add("alerts.large_transfers.queue_size must be >= 1")
+		}
 	}
 	if s.Postgres.Enabled && s.Postgres.DSN == "" {
 		add("sinks.postgres.dsn is required (DATABASE_URL)")
@@ -614,6 +663,12 @@ var envBindings = []envBinding{
 	{"TELEGRAM_BOT_TOKEN", str(func(c *Config) *string { return &c.Sinks.Telegram.BotToken })},
 	{"TELEGRAM_CHAT_ID", str(func(c *Config) *string { return &c.Sinks.Telegram.ChatID })},
 	{"TELEGRAM_MIN_AMOUNT", str(func(c *Config) *string { return &c.Sinks.Telegram.MinAmount })},
+	{"LARGE_ALERTS_ENABLED", boolean(func(c *Config) *bool { return &c.Alerts.LargeTransfers.Enabled })},
+	{"LARGE_ALERTS_BOT_TOKEN", str(func(c *Config) *string { return &c.Alerts.LargeTransfers.BotToken })},
+	{"LARGE_ALERTS_CHAT_ID", str(func(c *Config) *string { return &c.Alerts.LargeTransfers.ChatID })},
+	{"LARGE_ALERTS_THRESHOLD", str(func(c *Config) *string { return &c.Alerts.LargeTransfers.Threshold })},
+	{"LARGE_ALERTS_INTERVAL", duration(func(c *Config) *Duration { return &c.Alerts.LargeTransfers.Interval })},
+	{"LARGE_ALERTS_FOOTER", str(func(c *Config) *string { return &c.Alerts.LargeTransfers.Footer })},
 	{"SINK_POSTGRES_ENABLED", boolean(func(c *Config) *bool { return &c.Sinks.Postgres.Enabled })},
 	{"DATABASE_URL", str(func(c *Config) *string { return &c.Sinks.Postgres.DSN })},
 }

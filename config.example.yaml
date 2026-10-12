@@ -127,3 +127,21 @@ sinks:
     dsn: ""                  # env DATABASE_URL, e.g. postgres://user:pass@localhost:5432/tron?sslmode=disable
     cursor_name: default
     best_effort: false
+
+# Large-transfer channel: posts every transfer >= threshold on ANY enabled chain
+# (independent of the watch list and filter) to a Telegram channel, with
+# tronscan / tonviewer / etherscan links. Add the bot to the channel as an admin.
+# Paced to respect Telegram limits (~20 messages/minute per channel); bursts are
+# batched into one message (up to max_per_message transfers). Best-effort: never
+# blocks the listeners; a full queue drops the oldest pending alerts.
+alerts:
+  large_transfers:
+    enabled: false           # env LARGE_ALERTS_ENABLED
+    bot_token: ""            # env LARGE_ALERTS_BOT_TOKEN (default: sinks.telegram.bot_token / TELEGRAM_BOT_TOKEN)
+    chat_id: ""              # env LARGE_ALERTS_CHAT_ID, e.g. @usdt_whales or -100123…
+    threshold: "100000"      # env LARGE_ALERTS_THRESHOLD (token units)
+    interval: 3s             # env LARGE_ALERTS_INTERVAL, min gap between messages (>= 500ms)
+    max_per_message: 10      # 1..30
+    queue_size: 1000
+    footer: ""               # env LARGE_ALERTS_FOOTER, optional HTML line, e.g. 'via <a href="https://github.com/co-codin/USDT-Tracker">USDT-Tracker</a>'
+    api_base: ""             # default https://api.telegram.org

@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/co-codin/USDT-Tracker/internal/alert"
 	"github.com/co-codin/USDT-Tracker/internal/chain"
 	"github.com/co-codin/USDT-Tracker/internal/chain/eth"
 	"github.com/co-codin/USDT-Tracker/internal/chain/eth/erc20"
@@ -35,6 +36,7 @@ import (
 	"github.com/co-codin/USDT-Tracker/internal/server"
 	"github.com/co-codin/USDT-Tracker/internal/sink"
 	"github.com/co-codin/USDT-Tracker/internal/sink/postgres"
+	"github.com/co-codin/USDT-Tracker/internal/tgbot"
 	"github.com/co-codin/USDT-Tracker/internal/watch"
 )
 
@@ -69,6 +71,8 @@ type App struct {
 	disp      *sink.Dispatcher
 	pg        *postgres.Store
 	srv       *server.Server
+	// Alerts is the large-transfer channel alerter (nil when disabled).
+	Alerts *alert.Alerter
 }
 
 // New builds the application. Call Run, then Close.
@@ -123,6 +127,20 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 	}
 	a.pg = pg
 	a.disp = sink.NewDispatcher(entries, cfg.Listener.DedupeCacheSize, a.Metrics, log)
+	if la := cfg.Alerts.LargeTransfers; la.Enabled && !opts.Backfill {
+		bot, err := tgbot.New(tgbot.Options{Token: la.Token(&cfg), APIBase: la.APIBase, Backoff: opts.Backoff})
+		if err != nil {
+			return nil, errors.Join(err, a.disp.Close())
+		}
+		a.Alerts, err = alert.New(alert.Config{
+			ChatID: la.ChatID, Threshold: la.Threshold, Interval: la.Interval.D(),
+			MaxPerMessage: la.MaxPerMessage, QueueSize: la.QueueSize, Footer: la.Footer,
+		}, bot, log.With("component", "large_alerts"))
+		if err != nil {
+			return nil, errors.Join(err, a.disp.Close())
+		}
+		a.Alerts.OnSent(func(status string, n int) { a.Metrics.LargeAlerts.WithLabelValues(status).Add(float64(n)) })
+	}
 
 	var watchSrc watch.Source // nil interface when Postgres is off
 	if pg != nil {
@@ -136,6 +154,9 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		}
 		store, desc := a.cursorStore(c)
 		lc := listenerConfig(cfg, c, opts.Backoff)
+		if a.Alerts != nil {
+			lc.Taps = append(lc.Taps, a.Alerts.Observe)
+		}
 		p := &Pipeline{Chain: c, dyn: dyn, cursor: desc,
 			Listener: listener.New(lc, sources[c], matcher, a.disp, store, a.Metrics, log)}
 		a.Pipelines = append(a.Pipelines, p)
@@ -182,6 +203,7 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		"runtime_watch_list", pg != nil,
 		"admin_api", cfg.API.Token != "" && cfg.HTTP.Addr != "",
 		"min_amount", cfg.Filter.MinAmount,
+		"large_alerts", a.Alerts != nil,
 	)
 	return a, nil
 }
@@ -298,6 +320,12 @@ func (a *App) Run(ctx context.Context, from, to int64) error {
 			defer cancel()
 			_ = a.srv.Shutdown(sctx)
 		}()
+	}
+	if a.Alerts != nil && from == 0 {
+		actx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); a.Alerts.Run(actx, 5*time.Second) }()
+		defer func() { cancel(); <-done }()
 	}
 	if from > 0 {
 		if to == 0 {

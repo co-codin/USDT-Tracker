@@ -142,6 +142,8 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		"ETH_RPC_URL": "https://eth.example/v3/key", "ETH_RPS": "4", "ETH_CONTRACT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
 		"ETH_WATCH_ADDRESSES": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed", "ETH_CONFIRMATIONS": "6", "ETH_START_BLOCK": "-3",
 		"ETH_POLL_INTERVAL": "4s", "ETH_BATCH_SIZE": "20", "ETH_LOG_CHUNK": "10", "ETH_CURSOR_FILE": "/tmp/e.json",
+		"LARGE_ALERTS_ENABLED": "true", "LARGE_ALERTS_BOT_TOKEN": "lb", "LARGE_ALERTS_CHAT_ID": "@whales",
+		"LARGE_ALERTS_THRESHOLD": "250000", "LARGE_ALERTS_INTERVAL": "4s", "LARGE_ALERTS_FOOTER": "via x",
 	}
 	if len(e) != len(EnvVars()) {
 		t.Fatalf("test covers %d env vars, config supports %d", len(e), len(EnvVars()))
@@ -168,6 +170,9 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		c.ETH.RPCURL == "https://eth.example/v3/key", c.ETH.RPS == 4, c.ETH.Contract != "", len(c.ETH.WatchAddresses) == 1,
 		c.ETH.Confirmations == 6, c.ETH.StartBlock == -3, c.ETH.PollInterval.D() == 4*time.Second, c.ETH.BatchSize == 20,
 		c.ETH.LogChunk == 10, c.ETH.CursorFile == "/tmp/e.json",
+		c.Alerts.LargeTransfers.Enabled, c.Alerts.LargeTransfers.BotToken == "lb", c.Alerts.LargeTransfers.ChatID == "@whales",
+		c.Alerts.LargeTransfers.Threshold == "250000", c.Alerts.LargeTransfers.Interval.D() == 4*time.Second,
+		c.Alerts.LargeTransfers.Footer == "via x",
 	}
 	for i, ok := range checks {
 		if !ok {
@@ -220,6 +225,10 @@ func TestTONConfig(t *testing.T) {
 		"eth bad watch":       {"CHAINS": "eth", "ETH_WATCH_ADDRESSES": "0xF4a3aa3c52cdc41e3c1a7b8f7493ae1164ee7F07"},
 		"eth same cursor":     {"CHAINS": "tron,eth", "CURSOR_FILE": "/tmp/x.json", "ETH_CURSOR_FILE": "/tmp/x.json"},
 		"eth chunk":           {"CHAINS": "eth", "ETH_LOG_CHUNK": "0"},
+		"alerts no chat":      {"LARGE_ALERTS_ENABLED": "true", "LARGE_ALERTS_BOT_TOKEN": "x"},
+		"alerts no token":     {"LARGE_ALERTS_ENABLED": "true", "LARGE_ALERTS_CHAT_ID": "@x"},
+		"alerts threshold":    {"LARGE_ALERTS_ENABLED": "true", "LARGE_ALERTS_CHAT_ID": "@x", "TELEGRAM_BOT_TOKEN": "t", "LARGE_ALERTS_THRESHOLD": "0"},
+		"alerts interval":     {"LARGE_ALERTS_ENABLED": "true", "LARGE_ALERTS_CHAT_ID": "@x", "TELEGRAM_BOT_TOKEN": "t", "LARGE_ALERTS_INTERVAL": "10ms"},
 		"duplicate chain":     {"CHAINS": "ton,ton"},
 		"bad ton watch":       {"CHAINS": "ton", "TON_WATCH_ADDRESSES": "TYGjwWR9qhmGuTbCdGvgoM5Yv7rZPeC2yx"},
 		"bad master":          {"CHAINS": "ton", "TON_JETTON_MASTER": "nope"},
@@ -239,5 +248,15 @@ func TestTONConfig(t *testing.T) {
 	// TON settings are not validated while TON is disabled
 	if _, err := Load("", env(map[string]string{"TON_RPS": "0"})); err != nil {
 		t.Errorf("disabled ton validated: %v", err)
+	}
+}
+
+func TestLargeAlertsTokenFallback(t *testing.T) {
+	c, err := Load("", env(map[string]string{"LARGE_ALERTS_ENABLED": "true", "LARGE_ALERTS_CHAT_ID": "@x", "TELEGRAM_BOT_TOKEN": "shared"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Alerts.LargeTransfers.Token(&c) != "shared" || c.Alerts.LargeTransfers.Threshold != "100000" {
+		t.Fatalf("%+v", c.Alerts.LargeTransfers)
 	}
 }
