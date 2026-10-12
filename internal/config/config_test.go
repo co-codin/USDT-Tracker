@@ -144,6 +144,8 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		"ETH_POLL_INTERVAL": "4s", "ETH_BATCH_SIZE": "20", "ETH_LOG_CHUNK": "10", "ETH_CURSOR_FILE": "/tmp/e.json",
 		"LARGE_ALERTS_ENABLED": "true", "LARGE_ALERTS_BOT_TOKEN": "lb", "LARGE_ALERTS_CHAT_ID": "@whales",
 		"LARGE_ALERTS_THRESHOLD": "250000", "LARGE_ALERTS_INTERVAL": "4s", "LARGE_ALERTS_FOOTER": "via x",
+		"NOTIFY_BOT_ENABLED": "true", "TELEGRAM_NOTIFY_BOT_TOKEN": "nb", "NOTIFY_FREE_LIMIT": "2", "NOTIFY_PREMIUM_LIMIT": "20",
+		"NOTIFY_MIN_AMOUNT": "1",
 	}
 	if len(e) != len(EnvVars()) {
 		t.Fatalf("test covers %d env vars, config supports %d", len(e), len(EnvVars()))
@@ -173,6 +175,8 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		c.Alerts.LargeTransfers.Enabled, c.Alerts.LargeTransfers.BotToken == "lb", c.Alerts.LargeTransfers.ChatID == "@whales",
 		c.Alerts.LargeTransfers.Threshold == "250000", c.Alerts.LargeTransfers.Interval.D() == 4*time.Second,
 		c.Alerts.LargeTransfers.Footer == "via x",
+		c.NotifyBot.Enabled, c.NotifyBot.BotToken == "nb", c.NotifyBot.FreeLimit == 2, c.NotifyBot.PremiumLimit == 20,
+		c.NotifyBot.MinAmount == "1",
 	}
 	for i, ok := range checks {
 		if !ok {
@@ -225,6 +229,9 @@ func TestTONConfig(t *testing.T) {
 		"eth bad watch":       {"CHAINS": "eth", "ETH_WATCH_ADDRESSES": "0xF4a3aa3c52cdc41e3c1a7b8f7493ae1164ee7F07"},
 		"eth same cursor":     {"CHAINS": "tron,eth", "CURSOR_FILE": "/tmp/x.json", "ETH_CURSOR_FILE": "/tmp/x.json"},
 		"eth chunk":           {"CHAINS": "eth", "ETH_LOG_CHUNK": "0"},
+		"notify no token":     {"NOTIFY_BOT_ENABLED": "true", "SINK_POSTGRES_ENABLED": "true", "DATABASE_URL": "postgres://x"},
+		"notify no postgres":  {"NOTIFY_BOT_ENABLED": "true", "TELEGRAM_NOTIFY_BOT_TOKEN": "t"},
+		"notify limits":       {"NOTIFY_BOT_ENABLED": "true", "TELEGRAM_NOTIFY_BOT_TOKEN": "t", "SINK_POSTGRES_ENABLED": "true", "DATABASE_URL": "postgres://x", "NOTIFY_FREE_LIMIT": "5", "NOTIFY_PREMIUM_LIMIT": "2"},
 		"alerts no chat":      {"LARGE_ALERTS_ENABLED": "true", "LARGE_ALERTS_BOT_TOKEN": "x"},
 		"alerts no token":     {"LARGE_ALERTS_ENABLED": "true", "LARGE_ALERTS_CHAT_ID": "@x"},
 		"alerts threshold":    {"LARGE_ALERTS_ENABLED": "true", "LARGE_ALERTS_CHAT_ID": "@x", "TELEGRAM_BOT_TOKEN": "t", "LARGE_ALERTS_THRESHOLD": "0"},

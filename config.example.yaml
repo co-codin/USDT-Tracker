@@ -146,3 +146,17 @@ alerts:
     queue_size: 1000
     footer: ""               # env LARGE_ALERTS_FOOTER, optional HTML line, e.g. 'via <a href="https://github.com/co-codin/USDT-Tracker">USDT-Tracker</a>'
     api_base: ""             # default https://api.telegram.org
+
+# Self-service Telegram notify bot: users send /add <address> (TRON T…, TON UQ…/EQ…,
+# Ethereum 0x… — detected automatically) and get a private message for every incoming
+# and outgoing USDT transfer. Independent of the watch list. Runs inside the listener
+# (long polling, no webhook/public URL needed) and needs the postgres sink.
+# Commands: /start /help /add /list /remove /plan.
+notify_bot:
+  enabled: false             # env NOTIFY_BOT_ENABLED
+  bot_token: ""              # env TELEGRAM_NOTIFY_BOT_TOKEN (create a separate bot with @BotFather)
+  free_limit: 3              # env NOTIFY_FREE_LIMIT, addresses per user on plan 'free'
+  premium_limit: 50          # env NOTIFY_PREMIUM_LIMIT, plan 'premium' (set notify_users.plan; no billing built in)
+  min_amount: "0.01"         # env NOTIFY_MIN_AMOUNT, skips dust / zero-value address-poisoning transfers
+  poll_timeout: 50s
+  api_base: ""

@@ -56,6 +56,8 @@ type Config struct {
 	API      API      `yaml:"api"`
 	Sinks    Sinks    `yaml:"sinks"`
 	Alerts   Alerts   `yaml:"alerts"`
+	// NotifyBot is the self-service Telegram bot (/add your address, get a DM per transfer).
+	NotifyBot NotifyBot `yaml:"notify_bot"`
 }
 
 // MinAPITokenLen is the minimum accepted admin API token length.
@@ -235,6 +237,18 @@ func (l LargeTransferAlerts) Token(c *Config) string {
 	return c.Sinks.Telegram.BotToken
 }
 
+// NotifyBot configures the self-service notify bot (runs inside the
+// listener process; needs the postgres sink for users and subscriptions).
+type NotifyBot struct {
+	Enabled      bool     `yaml:"enabled"`
+	BotToken     string   `yaml:"bot_token"`     // TELEGRAM_NOTIFY_BOT_TOKEN (a separate bot from the alert bot)
+	FreeLimit    int      `yaml:"free_limit"`    // addresses per user on the free plan (default 3)
+	PremiumLimit int      `yaml:"premium_limit"` // addresses on plan 'premium' (default 50)
+	MinAmount    string   `yaml:"min_amount"`    // skip dust / zero-value poisoning transfers (default 0.01)
+	PollTimeout  Duration `yaml:"poll_timeout"`  // getUpdates long-poll timeout (default 50s)
+	APIBase      string   `yaml:"api_base"`      // default https://api.telegram.org
+}
+
 // PostgresSink config.
 type PostgresSink struct {
 	Enabled    bool   `yaml:"enabled"`
@@ -277,6 +291,7 @@ func Default() Config {
 			Telegram: TelegramSink{MaxPerBlock: 10, BestEffort: true},
 			Postgres: PostgresSink{CursorName: "default"},
 		},
+		NotifyBot: NotifyBot{FreeLimit: 3, PremiumLimit: 50, MinAmount: "0.01", PollTimeout: Duration(50 * time.Second)},
 		Alerts: Alerts{LargeTransfers: LargeTransferAlerts{
 			Threshold: "100000", Interval: Duration(3 * time.Second), MaxPerMessage: 10, QueueSize: 1000,
 		}},
@@ -418,6 +433,23 @@ func (c *Config) Validate() error {
 		}
 		if la.QueueSize < 1 {
 			add("alerts.large_transfers.queue_size must be >= 1")
+		}
+	}
+	if nb := c.NotifyBot; nb.Enabled {
+		if nb.BotToken == "" {
+			add("notify_bot requires bot_token (TELEGRAM_NOTIFY_BOT_TOKEN)")
+		}
+		if !s.Postgres.Enabled {
+			add("notify_bot needs the postgres sink (SINK_POSTGRES_ENABLED=true, DATABASE_URL) to store users and subscriptions")
+		}
+		if nb.FreeLimit < 1 || nb.PremiumLimit < nb.FreeLimit {
+			add("notify_bot: free_limit must be >= 1 and premium_limit >= free_limit")
+		}
+		if _, err := model.ParseUnits(nb.MinAmount, 18); err != nil {
+			add("notify_bot.min_amount: %v", err)
+		}
+		if nb.PollTimeout.D() < time.Second || nb.PollTimeout.D() > 60*time.Second {
+			add("notify_bot.poll_timeout must be between 1s and 60s")
 		}
 	}
 	if s.Postgres.Enabled && s.Postgres.DSN == "" {
@@ -669,6 +701,11 @@ var envBindings = []envBinding{
 	{"LARGE_ALERTS_THRESHOLD", str(func(c *Config) *string { return &c.Alerts.LargeTransfers.Threshold })},
 	{"LARGE_ALERTS_INTERVAL", duration(func(c *Config) *Duration { return &c.Alerts.LargeTransfers.Interval })},
 	{"LARGE_ALERTS_FOOTER", str(func(c *Config) *string { return &c.Alerts.LargeTransfers.Footer })},
+	{"NOTIFY_BOT_ENABLED", boolean(func(c *Config) *bool { return &c.NotifyBot.Enabled })},
+	{"TELEGRAM_NOTIFY_BOT_TOKEN", str(func(c *Config) *string { return &c.NotifyBot.BotToken })},
+	{"NOTIFY_FREE_LIMIT", intVal(func(c *Config) *int { return &c.NotifyBot.FreeLimit })},
+	{"NOTIFY_PREMIUM_LIMIT", intVal(func(c *Config) *int { return &c.NotifyBot.PremiumLimit })},
+	{"NOTIFY_MIN_AMOUNT", str(func(c *Config) *string { return &c.NotifyBot.MinAmount })},
 	{"SINK_POSTGRES_ENABLED", boolean(func(c *Config) *bool { return &c.Sinks.Postgres.Enabled })},
 	{"DATABASE_URL", str(func(c *Config) *string { return &c.Sinks.Postgres.DSN })},
 }

@@ -31,6 +31,8 @@ services:
     environment:
       SINK_POSTGRES_ENABLED: "true"
       DATABASE_URL: postgres://listener:${POSTGRES_PASSWORD:-listener}@postgres:5432/tron?sslmode=disable
+      # Notify bot / large-transfer channel: set NOTIFY_BOT_ENABLED + TELEGRAM_NOTIFY_BOT_TOKEN,
+      # LARGE_ALERTS_* in .env (Postgres is already on here).
       # Admin API (/v1/addresses) is enabled only when API_TOKEN is set (in .env or the shell).
       API_TOKEN: ${API_TOKEN:-}
       # tron (default), ton, eth, or e.g. tron,ton,eth. Set TONCENTER_API_KEY / ETH_RPC_URL in .env.

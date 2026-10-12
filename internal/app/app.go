@@ -33,6 +33,7 @@ import (
 	"github.com/co-codin/USDT-Tracker/internal/listener"
 	"github.com/co-codin/USDT-Tracker/internal/metrics"
 	"github.com/co-codin/USDT-Tracker/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/notify"
 	"github.com/co-codin/USDT-Tracker/internal/retry"
 	"github.com/co-codin/USDT-Tracker/internal/server"
 	"github.com/co-codin/USDT-Tracker/internal/sink"
@@ -74,6 +75,8 @@ type App struct {
 	srv       *server.Server
 	// Alerts is the large-transfer channel alerter (nil when disabled).
 	Alerts *alert.Alerter
+	// NotifyBot is the self-service notify bot (nil when disabled).
+	NotifyBot *notify.Bot
 }
 
 // New builds the application. Call Run, then Close.
@@ -143,6 +146,23 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		a.Alerts.OnSent(func(status string, n int) { a.Metrics.LargeAlerts.WithLabelValues(status).Add(float64(n)) })
 	}
 
+	if nb := cfg.NotifyBot; nb.Enabled && !opts.Backfill {
+		if pg == nil {
+			return nil, errors.Join(errors.New("notify_bot needs the postgres sink"), a.disp.Close())
+		}
+		api, err := tgbot.New(tgbot.Options{Token: nb.BotToken, APIBase: nb.APIBase, Backoff: opts.Backoff})
+		if err != nil {
+			return nil, errors.Join(err, a.disp.Close())
+		}
+		a.NotifyBot, err = notify.New(notify.Config{
+			FreeLimit: nb.FreeLimit, PremiumLimit: nb.PremiumLimit, MinAmount: nb.MinAmount,
+			Chains: chains, PollTimeout: nb.PollTimeout.D(),
+		}, pg.Notify(), api, log.With("component", "notify_bot"))
+		if err != nil {
+			return nil, errors.Join(err, a.disp.Close())
+		}
+	}
+
 	var watchSrc watch.Source // nil interface when Postgres is off
 	if pg != nil {
 		watchSrc = pg.Watchlist()
@@ -157,6 +177,9 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		lc := listenerConfig(cfg, c, opts.Backoff)
 		if a.Alerts != nil {
 			lc.Taps = append(lc.Taps, a.Alerts.Observe)
+		}
+		if a.NotifyBot != nil {
+			lc.Taps = append(lc.Taps, a.NotifyBot.Observe)
 		}
 		p := &Pipeline{Chain: c, dyn: dyn, cursor: desc,
 			Listener: listener.New(lc, sources[c], matcher, a.disp, store, a.Metrics, log)}
@@ -210,6 +233,7 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		"admin_api", cfg.API.Token != "" && cfg.HTTP.Addr != "",
 		"min_amount", cfg.Filter.MinAmount,
 		"large_alerts", a.Alerts != nil,
+		"notify_bot", a.NotifyBot != nil,
 	)
 	return a, nil
 }
@@ -331,6 +355,12 @@ func (a *App) Run(ctx context.Context, from, to int64) error {
 		actx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
 		go func() { defer close(done); a.Alerts.Run(actx, 5*time.Second) }()
+		defer func() { cancel(); <-done }()
+	}
+	if a.NotifyBot != nil && from == 0 {
+		nctx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); _ = a.NotifyBot.Run(nctx) }()
 		defer func() { cancel(); <-done }()
 	}
 	if from > 0 {

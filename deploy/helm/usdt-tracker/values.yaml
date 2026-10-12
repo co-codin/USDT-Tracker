@@ -73,6 +73,11 @@ config:
     telegram:
       enabled: false
       chat_id: ""          # bot token is secrets.telegramBotToken
+  notify_bot:              # self-service bot; token: secrets.notifyBotToken; needs Postgres
+    enabled: false
+    free_limit: 3
+    premium_limit: 50
+    min_amount: "0.01"
   alerts:
     large_transfers:       # every transfer >= threshold on any chain → Telegram channel
       enabled: false
@@ -87,7 +92,7 @@ extraEnv: {}
 # --- Secrets ------------------------------------------------------------------
 secrets:
   # Use an existing Secret instead of creating one. Recognised keys (all
-  # optional): API_TOKEN, TRON_PRO_API_KEY, TONCENTER_API_KEY, ETH_RPC_URL, TELEGRAM_BOT_TOKEN, LARGE_ALERTS_BOT_TOKEN,
+  # optional): API_TOKEN, TRON_PRO_API_KEY, TONCENTER_API_KEY, ETH_RPC_URL, TELEGRAM_BOT_TOKEN, LARGE_ALERTS_BOT_TOKEN, TELEGRAM_NOTIFY_BOT_TOKEN,
   # WEBHOOK_SECRET, DATABASE_URL.
   existingSecret: ""
   # Values below are only used when existingSecret is empty. Leave empty here.
@@ -96,6 +101,7 @@ secrets:
   toncenterApiKey: ""      # toncenter API key (X-API-Key); strongly recommended when config.chains has ton
   ethRpcUrl: ""            # Ethereum JSON-RPC URL (often embeds a provider key); empty = public node
   telegramBotToken: ""
+  notifyBotToken: ""       # TELEGRAM_NOTIFY_BOT_TOKEN for the self-service notify bot
   largeAlertsBotToken: ""  # optional separate bot for the large-transfer channel
   webhookSecret: ""        # HMAC-SHA256 signing key for the webhook sink
 

@@ -111,7 +111,11 @@ internal/
       erc20/                  ERC-20 Transfer logs over chunked block ranges (chain.Source + RangeSource)
       ethtest/                in-process mock JSON-RPC node for integration tests
   chainaddr/                  per-chain address validation / canonical form
+  alert/                      large-transfer Telegram channel (paced, batched, any chain)
+  export/                     CSV statement per address (/v1/export.csv, `export` subcommand)
   explorer/                   tronscan / tonviewer / etherscan links, display forms of addresses
+  notify/                     self-service Telegram notify bot (commands, subscriptions, dispatch)
+  tgbot/                      minimal Bot API client (sendMessage, getUpdates); tgtest/ mock Bot API
   config/                     YAML + env overrides + validation
   cursor/                     cursor stores (file, memory) + dedupe set
   filter/                     watch list / threshold matching, Dynamic (static + DB) filter
@@ -369,6 +373,42 @@ How it works:
 **Security:** the token is compared in constant time; request bodies are capped at 4 KB. The API
 has no TLS of its own – keep `:9090` on localhost/private network (docker-compose binds
 `127.0.0.1:9090`) or put it behind a TLS reverse proxy. `/metrics` and `/healthz` stay unauthenticated.
+
+## Telegram notify bot (self-service)
+
+A public bot where anyone can watch their own wallets – the free entry point of a hosted offering:
+
+```
+/add TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv     ✅ Watching TRON address …
+/add UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg
+/list                                        📋 Your addresses (2/3, free plan)
+/remove 1                                    🗑 Stopped watching …
+
+📥 +1,250 USDT received on TRON
+To: TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv
+From: TYGjwWR9qhmGuTbCdGvgoM5Yv7rZPeC2yx
+View transaction · 2026-10-12 21:25 UTC
+```
+
+```bash
+NOTIFY_BOT_ENABLED=true TELEGRAM_NOTIFY_BOT_TOKEN=<token from @BotFather> \
+SINK_POSTGRES_ENABLED=true DATABASE_URL=postgres://… CHAINS=tron,ton,eth ./bin/tron-usdt-listener
+```
+
+- Commands: `/start`, `/help`, `/add <address>` (chain auto-detected: TRON `T…`, TON `UQ…`/`EQ…`/`0:…`,
+  Ethereum `0x…` with EIP-55 check; a bare address also works), `/list`, `/remove <address|number>`, `/plan`.
+  Only chains enabled in `CHAINS` are accepted.
+- Runs **inside the listener** (same process, long polling via `getUpdates` – no public URL / webhook).
+  Users, subscriptions and the update offset live in Postgres (migration `0006`: `notify_users`,
+  `notify_subscriptions`, `notify_bot_state`).
+- Fed with every decoded transfer (independent of the watch list and filter); incoming, outgoing and
+  self transfers; transfers below `min_amount` (default 0.01) are skipped to ignore zero-value
+  address-poisoning spam. Global send rate 25 msg/s, several notifications for one chat are merged into
+  one message, a user who blocked the bot (`403`) is paused until they `/start` again.
+- **Plans / premium hook:** `notify_users.plan` (`free` by default) → limit `free_limit` (3) or
+  `premium_limit` (50) addresses. There is no payment code: upgrade a user with
+  `UPDATE notify_users SET plan = 'premium' WHERE chat_id = …` (or wire your billing to it).
+- Use a separate bot token from the alert bots (one `getUpdates` consumer per token).
 
 ## CSV / accounting export
 
@@ -713,6 +753,12 @@ TON 地址写在 `ton.watch_addresses` / `TON_WATCH_ADDRESSES`，也可以通过
 (in/out/self)、金额、备注、浏览器链接。标准 CSV 转义并防止表格公式注入。只能导出已入库的转账，
 所以要先把地址加入监听列表。
 
+**Telegram 收款通知机器人：** 设置 `NOTIFY_BOT_ENABLED=true` 和 `TELEGRAM_NOTIFY_BOT_TOKEN`（需要启用
+Postgres），用户在机器人里发 `/add <地址>`（自动识别 TRON / TON / 以太坊），之后每笔转入、转出的 USDT
+都会私信通知；还有 `/list`、`/remove`、`/plan`、`/help`。免费版默认最多 3 个地址（`NOTIFY_FREE_LIMIT`），
+`notify_users.plan = 'premium'` 时上限为 `NOTIFY_PREMIUM_LIMIT`（默认 50），这是以后接付费的入口，
+目前没有付款功能。机器人在监听进程里用长轮询运行，不需要公网地址；小于 0.01 的转账（投毒垃圾转账）会被忽略。
+
 ## Кратко на русском
 
 **tron-usdt-listener** — **read-only** сервис на Go для отслеживания переводов USDT (TRC-20) в сети
@@ -751,6 +797,13 @@ TRON. Он обходит блоки по диапазонам, декодиру
 по адресу из Postgres: время (UTC), сеть, хеш, from/to, направление (in/out/self), сумма, memo, ссылка
 на эксплорер. Экранирование по RFC 4180 и защита от формул в таблицах. Выгружаются только сохранённые
 переводы — адрес нужно заранее добавить в список отслеживания.
+
+**Бот уведомлений в Telegram:** `NOTIFY_BOT_ENABLED=true` и `TELEGRAM_NOTIFY_BOT_TOKEN` (нужен Postgres) —
+пользователь отправляет `/add <адрес>` (сеть TRON / TON / Ethereum определяется сама) и получает личное
+сообщение о каждом входящем и исходящем переводе USDT; также `/list`, `/remove`, `/plan`, `/help`.
+Бесплатно до 3 адресов (`NOTIFY_FREE_LIMIT`), план `premium` в `notify_users.plan` — до
+`NOTIFY_PREMIUM_LIMIT` (50); это задел под платную версию, оплаты в коде нет. Работает в процессе
+листенера через long polling, публичный URL не нужен; переводы меньше 0.01 (спам-«отравление») пропускаются.
 
 **Адреса во время работы (API v1):** при включённом Postgres-синке и заданном `API_TOKEN` адреса
 можно добавлять и удалять без перезапуска через `GET/POST/DELETE /v1/addresses`
