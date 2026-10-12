@@ -11,7 +11,7 @@
 {{- end }}
 {{- end }}
 {{- range (.Values.config.chains | default (list "tron")) }}
-{{- if not (has . (list "tron" "ton")) }}
-{{- fail (printf "config.chains: unknown chain %q (want tron|ton)" .) }}
+{{- if not (has . (list "tron" "ton" "eth")) }}
+{{- fail (printf "config.chains: unknown chain %q (want tron|ton|eth)" .) }}
 {{- end }}
 {{- end }}

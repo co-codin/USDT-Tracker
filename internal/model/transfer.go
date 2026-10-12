@@ -21,20 +21,21 @@ const (
 const (
 	ChainTron = "tron"
 	ChainTON  = "ton"
+	ChainETH  = "eth"
 )
 
 // Transfer is a decoded token transfer: a TRC-20 Transfer(address,address,uint256)
 // event on TRON or a jetton transfer on TON.
 type Transfer struct {
-	Chain       string    // "tron" (default when empty) or "ton"
-	TxID        string    // transaction hash (hex, no 0x)
+	Chain       string    // "tron" (default when empty), "ton" or "eth"
+	TxID        string    // transaction hash: hex without 0x on TRON/TON, 0x-prefixed lowercase on Ethereum
 	LogIndex    int       // position of the log inside the transaction's log list
 	BlockNumber int64     // block height
 	BlockTime   time.Time // block timestamp (UTC)
-	Contract    string    // token contract: base58check (T...) on TRON, jetton master raw address on TON
+	Contract    string    // token contract: base58check (T...) on TRON, jetton master raw address on TON, lowercase 0x on Ethereum
 	Symbol      string    // token symbol, e.g. USDT
 	Decimals    int       // token decimals, 6 for USDT
-	From        string    // sender: base58check on TRON, raw "0:<hex>" owner address on TON
+	From        string    // sender: base58check on TRON, raw "0:<hex>" owner address on TON, lowercase 0x on Ethereum
 	To          string    // recipient (same formats as From)
 	Amount      *big.Int  // raw amount in base units
 	Memo        string    // TON only: text comment of the transfer (forward payload), often an invoice id

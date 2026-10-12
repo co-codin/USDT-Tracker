@@ -18,6 +18,8 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/co-codin/USDT-Tracker/internal/chain"
+	"github.com/co-codin/USDT-Tracker/internal/chain/eth"
+	"github.com/co-codin/USDT-Tracker/internal/chain/eth/erc20"
 	"github.com/co-codin/USDT-Tracker/internal/chain/ton"
 	"github.com/co-codin/USDT-Tracker/internal/chain/ton/jetton"
 	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
@@ -176,6 +178,7 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		"cursor", strings.Join(cursors, " "),
 		"watch_addresses", len(cfg.Filter.WatchAddresses),
 		"ton_watch_addresses", len(cfg.TON.WatchAddresses),
+		"eth_watch_addresses", len(cfg.ETH.WatchAddresses),
 		"runtime_watch_list", pg != nil,
 		"admin_api", cfg.API.Token != "" && cfg.HTTP.Addr != "",
 		"min_amount", cfg.Filter.MinAmount,
@@ -215,6 +218,20 @@ func (a *App) buildSource(c string) (chain.Source, error) {
 			"token", cfg.TON.Symbol, "jetton_master", master.Friendly(true, false))
 		return jetton.NewSource(client, jetton.Token{Master: master, Symbol: cfg.TON.Symbol, Decimals: cfg.TON.Decimals},
 			log.With("chain", c), cm.DecodeErrors.Inc), nil
+	case model.ChainETH:
+		contract, err := eth.NormalizeAddress(cfg.ETH.Contract)
+		if err != nil {
+			return nil, fmt.Errorf("eth.contract: %w", err)
+		}
+		client := eth.NewClient(eth.Options{
+			URL: cfg.ETH.RPCURL, Timeout: cfg.ETH.Timeout.D(), RPS: cfg.ETH.RPS, MaxRetries: cfg.ETH.MaxRetries,
+			Backoff: opts.Backoff, UserAgent: "usdt-tracker/" + opts.Version, Observer: cm, Logger: log,
+		})
+		// The RPC URL may embed a provider key: log only scheme://host.
+		log.Info("eth source", "rpc", eth.RedactURL(cfg.ETH.RPCURL), "token", cfg.ETH.Symbol,
+			"contract", eth.Checksum(contract), "log_chunk", cfg.ETH.LogChunk)
+		return erc20.NewSource(client, erc20.Token{Contract: contract, Symbol: cfg.ETH.Symbol, Decimals: cfg.ETH.Decimals},
+			cfg.ETH.LogChunk, log.With("chain", c), cm.DecodeErrors.Inc), nil
 	default:
 		return nil, fmt.Errorf("unknown chain %q", c)
 	}
@@ -232,6 +249,8 @@ func (a *App) cursorStore(c string) (cursor.Store, string) {
 		return a.pg.Cursor(name), "postgres:" + name
 	case c == model.ChainTON:
 		return cursor.NewFileStore(a.cfg.TON.CursorFile), "file:" + a.cfg.TON.CursorFile
+	case c == model.ChainETH:
+		return cursor.NewFileStore(a.cfg.ETH.CursorFile), "file:" + a.cfg.ETH.CursorFile
 	default:
 		return cursor.NewFileStore(a.cfg.Cursor.File), "file:" + a.cfg.Cursor.File
 	}
@@ -248,12 +267,20 @@ func listenerConfig(cfg config.Config, c string, b retry.Backoff) listener.Confi
 		lc.Confirmations, lc.PollInterval, lc.StartBlock = t.Confirmations, t.PollInterval.D(), t.StartBlock
 		lc.BatchSize, lc.Concurrency = t.BatchSize, t.Concurrency
 	}
+	if c == model.ChainETH {
+		e := cfg.ETH
+		lc.Confirmations, lc.PollInterval, lc.StartBlock = e.Confirmations, e.PollInterval.D(), e.StartBlock
+		lc.BatchSize, lc.Concurrency = e.BatchSize, 1 // ranges are fetched with chunked eth_getLogs
+	}
 	return lc
 }
 
 func chainMinAmount(cfg config.Config, c string) (*big.Int, error) {
-	if c == model.ChainTON {
+	switch c {
+	case model.ChainTON:
 		return cfg.TONMinAmount()
+	case model.ChainETH:
+		return cfg.ETHMinAmount()
 	}
 	return cfg.MinAmount()
 }
@@ -342,10 +369,7 @@ func (a *App) health(ctx context.Context) (bool, any) {
 func staticAddresses(cfg config.Config, chains []string) []string {
 	var out []string
 	for _, c := range chains {
-		list := cfg.Filter.WatchAddresses
-		if c == model.ChainTON {
-			list = cfg.TON.WatchAddresses
-		}
+		list := chainWatchAddresses(cfg, c)
 		for _, s := range list {
 			if n, err := chainaddr.Normalize(c, s); err == nil {
 				out = append(out, n)
@@ -355,11 +379,20 @@ func staticAddresses(cfg config.Config, chains []string) []string {
 	return out
 }
 
-func staticFilterConfig(cfg config.Config, c string, minAmount *big.Int) filter.Config {
-	addrs := cfg.Filter.WatchAddresses
-	if c == model.ChainTON {
-		addrs = cfg.TON.WatchAddresses
+// chainWatchAddresses returns the static watch list configured for chain c.
+func chainWatchAddresses(cfg config.Config, c string) []string {
+	switch c {
+	case model.ChainTON:
+		return cfg.TON.WatchAddresses
+	case model.ChainETH:
+		return cfg.ETH.WatchAddresses
+	default:
+		return cfg.Filter.WatchAddresses
 	}
+}
+
+func staticFilterConfig(cfg config.Config, c string, minAmount *big.Int) filter.Config {
+	addrs := chainWatchAddresses(cfg, c)
 	return filter.Config{
 		Chain:          c,
 		WatchAddresses: addrs,

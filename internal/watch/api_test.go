@@ -137,7 +137,7 @@ func TestValidation(t *testing.T) {
 		"bad checksum":     `{"address":"TYGjwWR9qhmGuTbCdGvgoM5Yv7rZPeC2yX"}`,
 		"too short":        `{"address":"Tnope"}`,
 		"hex not accepted": `{"address":"41f4a3aa3c52cdc41e3c1a7b8f7493ae1164ee7f07"}`,
-		"evm":              `{"address":"0xf4a3aa3c52cdc41e3c1a7b8f7493ae1164ee7f07"}`,
+		"evm bad checksum": `{"address":"0xF4a3aa3c52cdc41e3c1a7b8f7493ae1164ee7F07"}`,
 		"bad direction":    `{"address":"` + alice + `","direction":"sideways"}`,
 		"unknown field":    `{"address":"` + alice + `","enabled":false}`,
 		"wrong type":       `{"address":123}`,
@@ -272,7 +272,7 @@ func TestAPITONAddresses(t *testing.T) {
 	if code != 200 || strings.Count(body, `"chain":"ton"`) != 1 || strings.Contains(body, alice) {
 		t.Fatalf("list ton: %d %s", code, body)
 	}
-	if code, _, _ := c.do("GET", "/v1/addresses?chain=eth", bearer, ""); code != http.StatusBadRequest {
+	if code, _, _ := c.do("GET", "/v1/addresses?chain=sol", bearer, ""); code != http.StatusBadRequest {
 		t.Errorf("bad chain filter: %d", code)
 	}
 	if code, body, _ := c.do("DELETE", "/v1/addresses/UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg", bearer, ""); code != http.StatusNoContent {

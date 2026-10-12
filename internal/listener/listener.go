@@ -240,6 +240,16 @@ func (l *Listener) loop(ctx context.Context, next, end int64, persist bool) erro
 // fetchRange fetches [from, to] concurrently and returns the longest
 // contiguous prefix that succeeded, plus the first error (if any).
 func (l *Listener) fetchRange(ctx context.Context, from, to int64) ([]chain.Block, error) {
+	if rs, ok := l.src.(chain.RangeSource); ok {
+		blocks, err := rs.Blocks(ctx, from, to)
+		if err != nil {
+			return nil, fmt.Errorf("blocks %d-%d: %w", from, to, err)
+		}
+		if int64(len(blocks)) != to-from+1 {
+			return nil, fmt.Errorf("blocks %d-%d: got %d blocks: %w", from, to, len(blocks), chain.ErrInconsistent)
+		}
+		return blocks, nil
+	}
 	n := int(to - from + 1)
 	blocks := make([]chain.Block, n)
 	errs := make([]error, n)

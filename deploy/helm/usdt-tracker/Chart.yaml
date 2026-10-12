@@ -1,15 +1,15 @@
 apiVersion: v2
 name: usdt-tracker
 description: >-
-  Read-only USDT transfer listener for TRON (TRC-20) and TON (USD₮ jetton) with a runtime watch-list API
+  Read-only USDT transfer listener for TRON (TRC-20), TON (USD₮ jetton) and Ethereum (ERC-20) with a runtime watch-list API
   (/v1/addresses), Prometheus metrics and optional bundled PostgreSQL.
 type: application
-version: 0.2.0
+version: 0.3.0
 appVersion: "latest"
 home: https://github.com/co-codin/USDT-Tracker
 sources:
   - https://github.com/co-codin/USDT-Tracker
-keywords: [tron, ton, usdt, trc20, jetton, blockchain, listener, payments]
+keywords: [tron, ton, ethereum, usdt, trc20, erc20, jetton, blockchain, listener, payments]
 maintainers:
   - name: co-codin
     url: https://github.com/co-codin

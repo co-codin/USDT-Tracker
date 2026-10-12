@@ -17,7 +17,7 @@ const ns = "tron_listener"
 type Metrics struct {
 	Registry *prometheus.Registry
 
-	// Per-chain collectors (label "chain": tron|ton). Use For(chain) to get
+	// Per-chain collectors (label "chain": tron|ton|eth). Use For(chain) to get
 	// the curried view a listener writes to.
 	HeadBlock         *prometheus.GaugeVec
 	SafeHeadBlock     *prometheus.GaugeVec

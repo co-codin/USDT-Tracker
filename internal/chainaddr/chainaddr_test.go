@@ -35,3 +35,20 @@ func TestNormalizeAndDetect(t *testing.T) {
 		t.Error("Valid")
 	}
 }
+
+func TestETHDetectAndNormalize(t *testing.T) {
+	c, err := Detect("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed")
+	if err != nil || c != "eth" {
+		t.Fatal(c, err)
+	}
+	if _, err := Detect("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD"); err == nil {
+		t.Fatal("bad checksum must not be detected")
+	}
+	n, err := Normalize("eth", "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed")
+	if err != nil || n != "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed" {
+		t.Fatal(n, err)
+	}
+	if !Valid("eth") {
+		t.Fatal()
+	}
+}

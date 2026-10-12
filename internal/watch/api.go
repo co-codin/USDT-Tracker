@@ -6,7 +6,7 @@ package watch
 //	POST   /v1/addresses              add {address, chain?, label?, direction?}
 //	DELETE /v1/addresses/{address}    remove a runtime address
 //
-// chain is "tron" or "ton"; when omitted it is detected from the address.
+// chain is "tron", "ton" or "eth"; when omitted it is detected from the address.
 //
 // Every request needs "Authorization: Bearer <API_TOKEN>". With an empty
 // token the API is disabled (404 for every /v1 path); without a store
@@ -115,8 +115,8 @@ func (h *API) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("chain"))); c != "" {
-		if c != ChainTron && c != ChainTON {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown chain %q (want tron|ton)", c))
+		if c != ChainTron && c != ChainTON && c != ChainETH {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown chain %q (want tron|ton|eth)", c))
 			return
 		}
 		kept := make([]Entry, 0, len(rows))

@@ -139,6 +139,9 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		"TON_JETTON_MASTER":   "0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe",
 		"TON_WATCH_ADDRESSES": "UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg, 0:852443f8599fe6a5da34fe43049ac4e0beb3071bb2bfb56635ea9421287c283a",
 		"TON_CONFIRMATIONS":   "5", "TON_START_BLOCK": "-10", "TON_POLL_INTERVAL": "500ms", "TON_CURSOR_FILE": "/tmp/t.json",
+		"ETH_RPC_URL": "https://eth.example/v3/key", "ETH_RPS": "4", "ETH_CONTRACT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+		"ETH_WATCH_ADDRESSES": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed", "ETH_CONFIRMATIONS": "6", "ETH_START_BLOCK": "-3",
+		"ETH_POLL_INTERVAL": "4s", "ETH_BATCH_SIZE": "20", "ETH_LOG_CHUNK": "10", "ETH_CURSOR_FILE": "/tmp/e.json",
 	}
 	if len(e) != len(EnvVars()) {
 		t.Fatalf("test covers %d env vars, config supports %d", len(e), len(EnvVars()))
@@ -162,6 +165,9 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		len(c.Chains) == 2 && c.Chains[0] == "tron" && c.Chains[1] == "ton", c.TON.APIURL == "https://ton.example/api/v3",
 		c.TON.APIKey == "tk", c.TON.RPS == 9, c.TON.JettonMaster != "", len(c.TON.WatchAddresses) == 2,
 		c.TON.Confirmations == 5, c.TON.StartBlock == -10, c.TON.PollInterval.D() == 500*time.Millisecond, c.TON.CursorFile == "/tmp/t.json",
+		c.ETH.RPCURL == "https://eth.example/v3/key", c.ETH.RPS == 4, c.ETH.Contract != "", len(c.ETH.WatchAddresses) == 1,
+		c.ETH.Confirmations == 6, c.ETH.StartBlock == -3, c.ETH.PollInterval.D() == 4*time.Second, c.ETH.BatchSize == 20,
+		c.ETH.LogChunk == 10, c.ETH.CursorFile == "/tmp/e.json",
 	}
 	for i, ok := range checks {
 		if !ok {
@@ -209,7 +215,11 @@ func TestTONConfig(t *testing.T) {
 		t.Fatalf("yaml: %+v %v", c.Chains, err)
 	}
 	for name, e := range map[string]map[string]string{
-		"unknown chain":       {"CHAINS": "eth"},
+		"unknown chain":       {"CHAINS": "sol"},
+		"eth bad rpc":         {"CHAINS": "eth", "ETH_RPC_URL": "ftp://x"},
+		"eth bad watch":       {"CHAINS": "eth", "ETH_WATCH_ADDRESSES": "0xF4a3aa3c52cdc41e3c1a7b8f7493ae1164ee7F07"},
+		"eth same cursor":     {"CHAINS": "tron,eth", "CURSOR_FILE": "/tmp/x.json", "ETH_CURSOR_FILE": "/tmp/x.json"},
+		"eth chunk":           {"CHAINS": "eth", "ETH_LOG_CHUNK": "0"},
 		"duplicate chain":     {"CHAINS": "ton,ton"},
 		"bad ton watch":       {"CHAINS": "ton", "TON_WATCH_ADDRESSES": "TYGjwWR9qhmGuTbCdGvgoM5Yv7rZPeC2yx"},
 		"bad master":          {"CHAINS": "ton", "TON_JETTON_MASTER": "nope"},

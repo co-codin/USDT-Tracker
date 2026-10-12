@@ -3,12 +3,14 @@
 [![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go)](go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-A **read-only** listener for **USDT transfers on TRON (TRC-20) and TON (USD₮ jetton)**, written in Go.
+A **read-only** listener for **USDT transfers on TRON (TRC-20), TON (USD₮ jetton) and Ethereum (ERC-20)**, written in Go.
 It follows each chain block by block, decodes every `Transfer` event of the USDT contract
 [`TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`](https://tronscan.org/#/token20/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t)
 on TRON and every transfer of the official USD₮ jetton master
 [`EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs`](https://tonviewer.com/EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs)
-on TON, filters them (watch list, large-transfer threshold) and fans them out to pluggable sinks:
+on TON and every ERC-20 `Transfer` of Tether USD
+[`0xdAC17F958D2ee523a2206206994597C13D831ec7`](https://etherscan.io/token/0xdAC17F958D2ee523a2206206994597C13D831ec7)
+on Ethereum, filters them (watch list, large-transfer threshold) and fans them out to pluggable sinks:
 **stdout JSON**, **signed webhooks**, **Telegram alerts** and **PostgreSQL**.
 
 Typical uses: deposit detection for a payment flow, treasury / whale alerts, feeding an analytics
@@ -39,9 +41,9 @@ pipeline, compliance monitoring of a set of addresses.
   Telegram bot, PostgreSQL (`pgx`, embedded migrations). Required vs best-effort per sink.
 - **Ops** – Prometheus `/metrics`, `/healthz` (503 when stalled), graceful shutdown on
   SIGINT/SIGTERM (finishes the in-flight block), distroless Docker image (~19 MB), docker-compose.
-- **TRON and TON, separately or together** – `chains: [tron]` (default), `[ton]` or `[tron, ton]`.
+- **TRON, TON and Ethereum, separately or together** – `chains: [tron]` (default), `[ton]`, `[eth]` or any combination such as `[tron, ton, eth]`.
   Each chain runs its own loop and cursor; sinks, filter rules, metrics (label `chain`) and the admin
-  API are shared. See [TON](#ton-usd-jetton).
+  API are shared. See [TON](#ton-usd-jetton) and [Ethereum](#ethereum-erc-20-usdt).
 - **Backfill mode** – `-from/-to` (plus `-chain` when several chains are enabled) re-processes any
   historical range without touching the cursor.
 - Works **without an API key** at a low request rate; set `TRON_PRO_API_KEY` for more headroom.
@@ -91,8 +93,8 @@ Processing loop:
 4. Filter → dispatch to all sinks → persist cursor. If a required sink fails, the same block is
    retried with backoff; nothing moves forward until it succeeds.
 
-Repository layout (chain-specific code lives under `internal/chain/<chain>`, so an Ethereum or
-Solana backend can be added as `internal/chain/eth`, `internal/chain/sol` implementing `chain.Source`):
+Repository layout (chain-specific code lives under `internal/chain/<chain>`, so another backend,
+e.g. Solana, can be added as `internal/chain/sol` implementing `chain.Source`):
 
 ```
 cmd/listener/                 main: flags, logging, signals, -healthcheck
@@ -105,7 +107,11 @@ internal/
     ton/                      TON: raw/user-friendly addresses, shards, read-only toncenter v3 client
       jetton/                 USD₮ jetton transfers per masterchain block (chain.Source)
       tontest/                in-process mock toncenter index for integration tests
+    eth/                      Ethereum: EIP-55 addresses, read-only JSON-RPC client (eth_blockNumber/eth_getLogs)
+      erc20/                  ERC-20 Transfer logs over chunked block ranges (chain.Source + RangeSource)
+      ethtest/                in-process mock JSON-RPC node for integration tests
   chainaddr/                  per-chain address validation / canonical form
+  explorer/                   tronscan / tonviewer / etherscan links, display forms of addresses
   config/                     YAML + env overrides + validation
   cursor/                     cursor stores (file, memory) + dedupe set
   filter/                     watch list / threshold matching, Dynamic (static + DB) filter
@@ -277,9 +283,19 @@ See [`config.example.yaml`](config.example.yaml) for every option with comments.
 | `ton.poll_interval` | `TON_POLL_INTERVAL` | `1s` | |
 | `ton.batch_size` / `ton.concurrency` | – | `20` / `2` | |
 | `ton.cursor_file` | `TON_CURSOR_FILE` | `./data/cursor-ton.json` | With Postgres: cursor row `<cursor_name>:ton` |
+| `eth.rpc_url` | `ETH_RPC_URL` | `https://ethereum-rpc.publicnode.com` | Any Ethereum JSON-RPC endpoint. Treated as a secret (provider keys live in the URL): only `scheme://host` is logged |
+| `eth.rps` | `ETH_RPS` | `5` | Client-side rate limit |
+| `eth.contract` | `ETH_CONTRACT` | USDT `0xdAC17F…1ec7` | Any ERC-20 (`eth.symbol` / `eth.decimals`, default `USDT` / `6`) |
+| `eth.watch_addresses` | `ETH_WATCH_ADDRESSES` | – | Ethereum addresses (`0x…`, lowercase or EIP-55), comma-separated in env |
+| `eth.confirmations` | `ETH_CONFIRMATIONS` | `12` | Blocks behind head (reorg margin) |
+| `eth.start_block` | `ETH_START_BLOCK` | `0` | Like `listener.start_block` |
+| `eth.poll_interval` | `ETH_POLL_INTERVAL` | `6s` | |
+| `eth.batch_size` | `ETH_BATCH_SIZE` | `50` | Blocks per iteration |
+| `eth.log_chunk` | `ETH_LOG_CHUNK` | `50` | Max blocks per `eth_getLogs` call; halved automatically when the node refuses a range |
+| `eth.cursor_file` | `ETH_CURSOR_FILE` | `./data/cursor-eth.json` | With Postgres: cursor row `<cursor_name>:eth` |
 
 `filter.direction`, `filter.min_amount` and `filter.mode` apply to both chains; `filter.watch_addresses`
-holds TRON addresses and `ton.watch_addresses` TON addresses (putting a TON address in the TRON list is
+holds TRON addresses, `ton.watch_addresses` TON addresses and `eth.watch_addresses` Ethereum addresses (putting a TON address in the TRON list is
 rejected with a hint).
 
 Every sink has `best_effort` (Telegram defaults to `true`, others to `false`). A **required** sink
@@ -403,6 +419,34 @@ Example TON stdout line (real mainnet transfer, masterchain block 98632901):
  "amount":"11.25","amount_raw":"11250000","reasons":"all","memo":"750 Telegram Stars \n\nRef#zopsXyorO"}
 ```
 
+## Ethereum (ERC-20 USDT)
+
+Enable with `CHAINS=eth` or together with the others, e.g. `CHAINS=tron,ton,eth`:
+
+```bash
+CHAINS=tron,eth ETH_RPC_URL=https://mainnet.infura.io/v3/<key> \
+ETH_WATCH_ADDRESSES=0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed ./bin/tron-usdt-listener
+```
+
+How it works (read-only, standard JSON-RPC – any node or provider works):
+
+- **Head** = `eth_blockNumber`; safe head = `head − eth.confirmations` (default 12 blocks ≈ 2.5 min).
+- **Transfers** = `eth_getLogs` filtered by the USDT contract and topic0
+  `keccak256("Transfer(address,address,uint256)")` =
+  `0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef`, fetched in chunks of
+  `eth.log_chunk` blocks. When a provider rejects a range (too many results / block-range limit) the
+  chunk is split in half automatically down to single blocks. `429`, `Retry-After`, `-32005` and
+  similar rate-limit errors are retried with backoff.
+- Block timestamps come from the logs' `blockTimestamp` field (geth ≥ 1.14 / most providers) or,
+  when absent, from `eth_getBlockByNumber` for blocks that contain transfers.
+- Addresses are stored in canonical **lowercase** `0x…` form; the config and API accept lowercase,
+  uppercase or a valid **EIP-55** checksum (mixed case with a wrong checksum is rejected). Telegram
+  alerts show the checksummed form. `tx_id` is the `0x`-prefixed hash; idempotency id
+  `eth:<tx_hash>:<log_index>`.
+- The free public node (`ethereum-rpc.publicnode.com`) is fine for following the head (verified:
+  ~60 transfers/block, stays 12 blocks behind head) but refuses old ("archive") ranges – use your own
+  node or a provider URL for historical backfills.
+
 ## Output formats
 
 ### stdout (one line per transfer)
@@ -439,7 +483,7 @@ X-Signature-256: sha256=<hex HMAC-SHA256(secret, "<timestamp>.<raw body>")>
  "reasons":["large_transfer"],"chain":"tron"}]}
 ```
 
-Every transfer carries `"chain":"tron"` or `"chain":"ton"` (TON transfers may also carry `"memo"`).
+Every transfer carries `"chain":"tron"`, `"chain":"ton"` or `"chain":"eth"` (TON transfers may also carry `"memo"`).
 A webhook batch always contains one block of one chain; TON `block_number` is the masterchain seqno.
 
 `5xx`, `408`, `429` (with `Retry-After`) and network errors are retried with backoff; other `4xx` are
@@ -485,10 +529,12 @@ watch_addresses(address TEXT PRIMARY KEY  -- base58 T… or TON raw 0:<hex>, lab
 -- migration 0003 (backward compatible, existing rows become 'tron'):
 --   trc20_transfers  + chain TEXT NOT NULL DEFAULT 'tron', + memo TEXT, index (chain, block_number)
 --   watch_addresses  + chain TEXT NOT NULL DEFAULT 'tron', address check per chain
+-- migration 0004: watch_addresses accepts chain 'eth' with lowercase 0x<40 hex>
 ```
 
 The table keeps its historical name `trc20_transfers` for compatibility; filter TON rows with
-`WHERE chain = 'ton'`. The TRON cursor row is `<cursor_name>` (unchanged), the TON one `<cursor_name>:ton`.
+`WHERE chain = 'ton'`. The TRON cursor row is `<cursor_name>` (unchanged), the TON one `<cursor_name>:ton`, the Ethereum one `<cursor_name>:eth`
+(Ethereum rows: `chain = 'eth'`, `tx_id` = `0x…` hash, lowercase addresses).
 
 ## Metrics & health
 
@@ -581,6 +627,12 @@ TON 地址写在 `ton.watch_addresses` / `TON_WATCH_ADDRESSES`，也可以通过
 未启用 Postgres 时 API 返回 503，静态配置照常工作。Kubernetes 部署见 `deploy/helm/usdt-tracker`
 （Helm chart，可内置 PostgreSQL 或连接外部数据库，token 通过 Secret 注入）。
 
+**以太坊支持：** 设置 `CHAINS=eth`（或 `tron,ton,eth`）即可监听以太坊上的 USDT（ERC-20，合约
+`0xdAC17F958D2ee523a2206206994597C13D831ec7`，6 位小数）。通过标准 JSON-RPC 的 `eth_blockNumber` 和
+`eth_getLogs` 只读获取，按区块范围分段请求，节点拒绝时自动减半，429 自动重试。RPC 地址用
+`ETH_RPC_URL` 配置（常带服务商 key，按密钥处理，日志里只显示域名），默认是免费的 publicnode
+公共节点。地址统一存成小写 `0x…`，配置和 API 接受小写或正确的 EIP-55 校验格式。
+
 ## Кратко на русском
 
 **tron-usdt-listener** — **read-only** сервис на Go для отслеживания переводов USDT (TRC-20) в сети
@@ -601,6 +653,12 @@ TRON. Он обходит блоки по диапазонам, декодиру
 / `TON_WATCH_ADDRESSES` или через `/v1/addresses` (сеть определяется автоматически или `"chain":"ton"`).
 Без API-ключа toncenter даёт ~1 запрос/с и не успевает за мейннетом — получите бесплатный ключ в
 @tonapibot и задайте `TONCENTER_API_KEY` и `TON_RPS=9`.
+
+**Ethereum:** `CHAINS=eth` (или `tron,ton,eth`) включает отслеживание USDT ERC-20
+(`0xdAC17F958D2ee523a2206206994597C13D831ec7`, 6 знаков) через стандартный JSON-RPC (`eth_blockNumber`,
+`eth_getLogs` по диапазонам блоков с автоматическим делением, ретраи при 429). Адрес RPC — `ETH_RPC_URL`
+(считается секретом, в логах только хост); по умолчанию бесплатный узел publicnode. Адреса хранятся
+в нижнем регистре `0x…`, на входе принимается нижний регистр или корректная контрольная сумма EIP-55.
 
 **Адреса во время работы (API v1):** при включённом Postgres-синке и заданном `API_TOKEN` адреса
 можно добавлять и удалять без перезапуска через `GET/POST/DELETE /v1/addresses`

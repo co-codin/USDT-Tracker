@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain/eth"
 	"github.com/co-codin/USDT-Tracker/internal/chain/ton"
 	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
 )
@@ -21,6 +22,7 @@ import (
 const (
 	ChainTron = "tron"
 	ChainTON  = "ton"
+	ChainETH  = "eth"
 )
 
 // Directions accepted for a watched address (same values as filter.direction).
@@ -42,7 +44,7 @@ var (
 
 // Entry is one runtime watch address.
 type Entry struct {
-	Chain     string    `json:"chain"`   // tron|ton
+	Chain     string    `json:"chain"`   // tron|ton|eth
 	Address   string    `json:"address"` // canonical: base58 ("T…") on TRON, raw "0:<hex>" on TON
 	Label     *string   `json:"label"`
 	Direction string    `json:"direction"` // both|incoming|outgoing
@@ -94,8 +96,13 @@ func NormalizeChainAddress(chain, address string) (string, string, error) {
 	address = strings.TrimSpace(address)
 	if chain == "" {
 		chain = ChainTron
-		if _, err := ton.ParseAddress(address); err == nil {
-			chain = ChainTON
+		switch {
+		case strings.HasPrefix(address, "0x") || strings.HasPrefix(address, "0X"):
+			chain = ChainETH
+		default:
+			if _, err := ton.ParseAddress(address); err == nil {
+				chain = ChainTON
+			}
 		}
 	}
 	switch chain {
@@ -105,8 +112,11 @@ func NormalizeChainAddress(chain, address string) (string, string, error) {
 	case ChainTON:
 		a, err := ton.NormalizeAddress(address)
 		return chain, a, err
+	case ChainETH:
+		a, err := eth.NormalizeAddress(address)
+		return chain, a, err
 	default:
-		return "", "", fmt.Errorf("unknown chain %q (want tron|ton)", chain)
+		return "", "", fmt.Errorf("unknown chain %q (want tron|ton|eth)", chain)
 	}
 }
 

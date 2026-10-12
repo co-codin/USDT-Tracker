@@ -40,7 +40,7 @@ func TestTONFilter(t *testing.T) {
 	if _, err := New(Config{Chain: "tron", WatchAddresses: []string{tonA}}); err == nil {
 		t.Error("ton address accepted for tron filter")
 	}
-	if _, err := New(Config{Chain: "eth"}); err == nil {
+	if _, err := New(Config{Chain: "sol"}); err == nil {
 		t.Error("unknown chain accepted")
 	}
 }

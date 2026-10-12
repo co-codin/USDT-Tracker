@@ -17,6 +17,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/co-codin/USDT-Tracker/internal/chain/ton"
+	"github.com/co-codin/USDT-Tracker/internal/explorer"
 	"github.com/co-codin/USDT-Tracker/internal/model"
 	"github.com/co-codin/USDT-Tracker/internal/retry"
 )
@@ -35,6 +36,9 @@ type TelegramConfig struct {
 	// TONExplorerURL is the transaction link prefix for TON transfers
 	// (default https://tonviewer.com/transaction/, takes the hex hash).
 	TONExplorerURL string
+	// ETHExplorerURL is the link prefix for Ethereum transfers
+	// (default https://etherscan.io/tx/, takes the 0x hash).
+	ETHExplorerURL string
 	MaxRetries     int
 	Backoff        retry.Backoff
 	HTTPClient     *http.Client
@@ -60,6 +64,9 @@ func NewTelegram(cfg TelegramConfig) (*Telegram, error) {
 	}
 	if cfg.TONExplorerURL == "" {
 		cfg.TONExplorerURL = "https://tonviewer.com/transaction/"
+	}
+	if cfg.ETHExplorerURL == "" {
+		cfg.ETHExplorerURL = explorer.ETHTx
 	}
 	if cfg.MaxPerBlock <= 0 {
 		cfg.MaxPerBlock = 10
@@ -94,11 +101,14 @@ func (t *Telegram) Send(ctx context.Context, b Batch) error {
 		shown = alerts[:t.cfg.MaxPerBlock]
 	}
 	for _, tr := range shown {
-		explorer := t.cfg.ExplorerURL
-		if tr.ChainName() == model.ChainTON {
-			explorer = t.cfg.TONExplorerURL
+		link := t.cfg.ExplorerURL
+		switch tr.ChainName() {
+		case model.ChainTON:
+			link = t.cfg.TONExplorerURL
+		case model.ChainETH:
+			link = t.cfg.ETHExplorerURL
 		}
-		if err := t.sendMessage(ctx, FormatTelegram(tr, explorer)); err != nil {
+		if err := t.sendMessage(ctx, FormatTelegram(tr, link)); err != nil {
 			return err
 		}
 	}
@@ -116,7 +126,7 @@ func (t *Telegram) Send(ctx context.Context, b Batch) error {
 }
 
 // FormatTelegram renders an HTML alert message for a transfer.
-func FormatTelegram(tr model.Transfer, explorer string) string {
+func FormatTelegram(tr model.Transfer, txPrefix string) string {
 	title := "💸 " + tr.Symbol + " transfer"
 	switch {
 	case tr.HasReason(model.ReasonIncoming):
@@ -130,8 +140,11 @@ func FormatTelegram(tr model.Transfer, explorer string) string {
 	fmt.Fprintf(&sb, "<b>%s</b>\n", html.EscapeString(title))
 	fmt.Fprintf(&sb, "💵 <b>%s %s</b>\n", model.HumanizeUnits(tr.Amount, tr.Decimals, 2), html.EscapeString(tr.Symbol))
 	from, to, blockWord := tr.From, tr.To, "Block"
-	if tr.ChainName() == model.ChainTON { // show the wallet-style UQ… form
+	switch tr.ChainName() {
+	case model.ChainTON: // show the wallet-style UQ… form
 		from, to, blockWord = ton.FriendlyFromRaw(from), ton.FriendlyFromRaw(to), "TON masterchain block"
+	case model.ChainETH: // EIP-55 checksummed, as on etherscan
+		from, to, blockWord = explorer.DisplayAddress(model.ChainETH, from), explorer.DisplayAddress(model.ChainETH, to), "Ethereum block"
 	}
 	fmt.Fprintf(&sb, "From: <code>%s</code>\n", html.EscapeString(from))
 	fmt.Fprintf(&sb, "To:   <code>%s</code>\n", html.EscapeString(to))
@@ -139,7 +152,7 @@ func FormatTelegram(tr model.Transfer, explorer string) string {
 		fmt.Fprintf(&sb, "Memo: <code>%s</code>\n", html.EscapeString(truncRunes(tr.Memo, 200)))
 	}
 	fmt.Fprintf(&sb, "%s: %d · %s\n", blockWord, tr.BlockNumber, tr.BlockTime.UTC().Format("2006-01-02 15:04:05 UTC"))
-	fmt.Fprintf(&sb, "Tx: <a href=\"%s%s\">%s…%s</a>", html.EscapeString(explorer), html.EscapeString(tr.TxID), html.EscapeString(short(tr.TxID, 8)), html.EscapeString(tail(tr.TxID, 6)))
+	fmt.Fprintf(&sb, "Tx: <a href=\"%s%s\">%s…%s</a>", html.EscapeString(txPrefix), html.EscapeString(tr.TxID), html.EscapeString(short(tr.TxID, 8)), html.EscapeString(tail(tr.TxID, 6)))
 	return sb.String()
 }
 

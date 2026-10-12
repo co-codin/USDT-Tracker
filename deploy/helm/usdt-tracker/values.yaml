@@ -34,7 +34,7 @@ config:
   log:
     level: info
     format: json
-  # tron (default), ton, or both: [tron, ton]. Each chain has its own cursor.
+  # tron (default), ton, eth, e.g. [tron, ton, eth]. Each chain has its own cursor.
   chains: [tron]
   ton:
     api_url: https://toncenter.com/api/v3
@@ -43,6 +43,15 @@ config:
     confirmations: 3
     start_block: 0
     watch_addresses: []    # static TON addresses (EQ…/UQ…/0:<hex>); runtime ones via the API
+  eth:
+    # rpc_url defaults to the free public node; put a provider URL with a key
+    # in secrets.ethRpcUrl (ETH_RPC_URL) instead of here.
+    rps: 5
+    contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7"   # USDT (ERC-20)
+    confirmations: 12
+    start_block: 0
+    log_chunk: 50
+    watch_addresses: []    # static Ethereum addresses (0x…); runtime ones via the API
   tron:
     api_url: https://api.trongrid.io
     rps: 3
@@ -71,13 +80,14 @@ extraEnv: {}
 # --- Secrets ------------------------------------------------------------------
 secrets:
   # Use an existing Secret instead of creating one. Recognised keys (all
-  # optional): API_TOKEN, TRON_PRO_API_KEY, TONCENTER_API_KEY, TELEGRAM_BOT_TOKEN,
+  # optional): API_TOKEN, TRON_PRO_API_KEY, TONCENTER_API_KEY, ETH_RPC_URL, TELEGRAM_BOT_TOKEN,
   # WEBHOOK_SECRET, DATABASE_URL.
   existingSecret: ""
   # Values below are only used when existingSecret is empty. Leave empty here.
   apiToken: ""             # admin API bearer token (>= 16 chars); empty = API disabled
   tronApiKey: ""           # TronGrid TRON-PRO-API-KEY
   toncenterApiKey: ""      # toncenter API key (X-API-Key); strongly recommended when config.chains has ton
+  ethRpcUrl: ""            # Ethereum JSON-RPC URL (often embeds a provider key); empty = public node
   telegramBotToken: ""
   webhookSecret: ""        # HMAC-SHA256 signing key for the webhook sink
 

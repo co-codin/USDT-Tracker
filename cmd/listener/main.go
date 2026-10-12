@@ -39,7 +39,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		configPath  = fs.String("config", defaultConfigPath(), "path to YAML config (env: CONFIG_FILE)")
 		from        = fs.Int64("from", 0, "backfill: first block (inclusive); runs once and exits, cursor untouched")
 		to          = fs.Int64("to", 0, "backfill: last block (inclusive, default = -from)")
-		chainName   = fs.String("chain", "", "backfill: chain to backfill (tron|ton) when several are enabled; TON blocks are masterchain seqnos")
+		chainName   = fs.String("chain", "", "backfill: chain to backfill (tron|ton|eth) when several are enabled; TON blocks are masterchain seqnos")
 		showVersion = fs.Bool("version", false, "print version and exit")
 		healthcheck = fs.Bool("healthcheck", false, "query the local /healthz endpoint and exit 0/1 (for container health checks)")
 	)

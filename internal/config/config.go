@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/co-codin/USDT-Tracker/internal/chain/eth"
 	"github.com/co-codin/USDT-Tracker/internal/chain/ton"
 	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
 	"github.com/co-codin/USDT-Tracker/internal/model"
@@ -41,11 +42,12 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 // Config is the full application configuration.
 type Config struct {
 	Log Log `yaml:"log"`
-	// Chains lists the chains to listen on: [tron] (default), [ton] or both.
+	// Chains lists the chains to listen on: any of tron (default), ton, eth.
 	// Each chain runs its own listener loop and cursor; sinks are shared.
 	Chains   []string `yaml:"chains"`
 	Tron     Tron     `yaml:"tron"`
 	TON      TON      `yaml:"ton"`
+	ETH      ETH      `yaml:"eth"`
 	Token    Token    `yaml:"token"`
 	Listener Listener `yaml:"listener"`
 	Cursor   Cursor   `yaml:"cursor"`
@@ -99,6 +101,33 @@ type TON struct {
 	Concurrency    int      `yaml:"concurrency"`
 	// CursorFile is the TON file cursor (ignored when the postgres sink is
 	// on: the Postgres cursor "<cursor_name>:ton" is used instead).
+	CursorFile string `yaml:"cursor_file"`
+}
+
+// ETH configures the Ethereum listener (ERC-20 USDT via JSON-RPC
+// eth_blockNumber + eth_getLogs). Read-only: no keys are ever needed.
+type ETH struct {
+	// RPCURL is the JSON-RPC endpoint (ETH_RPC_URL). Provider URLs often
+	// embed an API key, so it is treated as a secret and never logged.
+	RPCURL     string   `yaml:"rpc_url"`
+	Timeout    Duration `yaml:"timeout"`
+	RPS        float64  `yaml:"rps"`
+	MaxRetries int      `yaml:"max_retries"`
+	Contract   string   `yaml:"contract"` // default: USDT 0xdAC17F958D2ee523a2206206994597C13D831ec7
+	Symbol     string   `yaml:"symbol"`
+	Decimals   int      `yaml:"decimals"`
+	// WatchAddresses are Ethereum addresses (0x…, lowercase or EIP-55).
+	WatchAddresses []string `yaml:"watch_addresses"`
+	Confirmations  int64    `yaml:"confirmations"`
+	PollInterval   Duration `yaml:"poll_interval"`
+	StartBlock     int64    `yaml:"start_block"`
+	// BatchSize is the number of blocks processed per iteration.
+	BatchSize int `yaml:"batch_size"`
+	// LogChunk is the max block range per eth_getLogs call (halved
+	// automatically when the node rejects a range).
+	LogChunk int `yaml:"log_chunk"`
+	// CursorFile is the ETH file cursor (Postgres cursor "<cursor_name>:eth"
+	// is used when the postgres sink is on).
 	CursorFile string `yaml:"cursor_file"`
 }
 
@@ -197,6 +226,12 @@ func Default() Config {
 			Confirmations: 3, PollInterval: Duration(time.Second), BatchSize: 20, Concurrency: 2,
 			CursorFile: "./data/cursor-ton.json",
 		},
+		ETH: ETH{
+			RPCURL: eth.DefaultRPCURL, Timeout: Duration(20 * time.Second), RPS: 5, MaxRetries: 8,
+			Contract: eth.USDTContract, Symbol: "USDT", Decimals: 6,
+			Confirmations: 12, PollInterval: Duration(6 * time.Second), BatchSize: 50, LogChunk: 50,
+			CursorFile: "./data/cursor-eth.json",
+		},
 		Token: Token{
 			Contract: USDTContract, Symbol: "USDT", Decimals: 6,
 		},
@@ -247,12 +282,12 @@ func (c *Config) Validate() error {
 	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
 
 	if len(c.Chains) == 0 {
-		add("chains must list at least one of tron, ton")
+		add("chains must list at least one of tron, ton, eth")
 	}
 	seenChain := map[string]bool{}
 	for _, ch := range c.Chains {
-		if ch != model.ChainTron && ch != model.ChainTON {
-			add("chains: unknown chain %q (want tron|ton)", ch)
+		if ch != model.ChainTron && ch != model.ChainTON && ch != model.ChainETH {
+			add("chains: unknown chain %q (want tron|ton|eth)", ch)
 		}
 		if seenChain[ch] {
 			add("chains: %q listed twice", ch)
@@ -261,6 +296,9 @@ func (c *Config) Validate() error {
 	}
 	if c.HasChain(model.ChainTON) {
 		c.validateTON(add)
+	}
+	if c.HasChain(model.ChainETH) {
+		c.validateETH(add)
 	}
 	if _, err := tron.ParseAddress(c.Token.Contract); err != nil {
 		add("token.contract: %v", err)
@@ -284,6 +322,10 @@ func (c *Config) Validate() error {
 		if _, err := tron.ParseAddress(a); err != nil {
 			if _, terr := ton.ParseAddress(a); terr == nil {
 				add("filter.watch_addresses: %q is a TON address: put it in ton.watch_addresses (TON_WATCH_ADDRESSES)", a)
+				continue
+			}
+			if eth.IsAddress(a) {
+				add("filter.watch_addresses: %q is an Ethereum address: put it in eth.watch_addresses (ETH_WATCH_ADDRESSES)", a)
 				continue
 			}
 			add("filter.watch_addresses: %q: %v", a, err)
@@ -375,6 +417,54 @@ func (c *Config) validateTON(add func(string, ...any)) {
 	if !c.Sinks.Postgres.Enabled && t.CursorFile == c.Cursor.File && c.HasChain(model.ChainTron) {
 		add("ton.cursor_file must differ from cursor.file")
 	}
+}
+
+func (c *Config) validateETH(add func(string, ...any)) {
+	e := c.ETH
+	if _, err := eth.NormalizeAddress(e.Contract); err != nil {
+		add("eth.contract: %v", err)
+	}
+	if e.RPCURL == "" {
+		add("eth.rpc_url is required (ETH_RPC_URL)")
+	} else if r := eth.RedactURL(e.RPCURL); r == "<invalid url>" || (!strings.HasPrefix(e.RPCURL, "http://") && !strings.HasPrefix(e.RPCURL, "https://")) {
+		add("eth.rpc_url must be an http(s) URL")
+	}
+	if e.Decimals < 0 || e.Decimals > 36 {
+		add("eth.decimals must be between 0 and 36")
+	}
+	if e.RPS <= 0 {
+		add("eth.rps must be > 0")
+	}
+	if e.Confirmations < 0 {
+		add("eth.confirmations must be >= 0")
+	}
+	if e.BatchSize < 1 || e.BatchSize > 5000 {
+		add("eth.batch_size must be between 1 and 5000")
+	}
+	if e.LogChunk < 1 || e.LogChunk > 5000 {
+		add("eth.log_chunk must be between 1 and 5000")
+	}
+	for _, a := range e.WatchAddresses {
+		if _, err := eth.NormalizeAddress(a); err != nil {
+			add("eth.watch_addresses: %v", err)
+		}
+	}
+	if _, err := model.ParseUnits(c.Filter.MinAmount, e.Decimals); err != nil {
+		add("filter.min_amount (eth decimals): %v", err)
+	}
+	if !c.Sinks.Postgres.Enabled {
+		if e.CursorFile == "" {
+			add("eth.cursor_file is required when the postgres sink is disabled")
+		}
+		if (e.CursorFile == c.Cursor.File && c.HasChain(model.ChainTron)) || (e.CursorFile == c.TON.CursorFile && c.HasChain(model.ChainTON)) {
+			add("eth.cursor_file must differ from the other chains' cursor files")
+		}
+	}
+}
+
+// ETHMinAmount returns the large-transfer threshold in ERC-20 units.
+func (c *Config) ETHMinAmount() (*big.Int, error) {
+	return model.ParseUnits(c.Filter.MinAmount, c.ETH.Decimals)
 }
 
 // HasChain reports whether chain is enabled.
@@ -482,6 +572,23 @@ var envBindings = []envBinding{
 	{"TON_START_BLOCK", integer(func(c *Config) *int64 { return &c.TON.StartBlock })},
 	{"TON_POLL_INTERVAL", duration(func(c *Config) *Duration { return &c.TON.PollInterval })},
 	{"TON_CURSOR_FILE", str(func(c *Config) *string { return &c.TON.CursorFile })},
+	{"ETH_RPC_URL", str(func(c *Config) *string { return &c.ETH.RPCURL })},
+	{"ETH_RPS", func(c *Config, v string) error {
+		f, err := strconv.ParseFloat(v, 64)
+		c.ETH.RPS = f
+		return err
+	}},
+	{"ETH_CONTRACT", str(func(c *Config) *string { return &c.ETH.Contract })},
+	{"ETH_WATCH_ADDRESSES", func(c *Config, v string) error {
+		c.ETH.WatchAddresses = splitList(v)
+		return nil
+	}},
+	{"ETH_CONFIRMATIONS", integer(func(c *Config) *int64 { return &c.ETH.Confirmations })},
+	{"ETH_START_BLOCK", integer(func(c *Config) *int64 { return &c.ETH.StartBlock })},
+	{"ETH_POLL_INTERVAL", duration(func(c *Config) *Duration { return &c.ETH.PollInterval })},
+	{"ETH_BATCH_SIZE", intVal(func(c *Config) *int { return &c.ETH.BatchSize })},
+	{"ETH_LOG_CHUNK", intVal(func(c *Config) *int { return &c.ETH.LogChunk })},
+	{"ETH_CURSOR_FILE", str(func(c *Config) *string { return &c.ETH.CursorFile })},
 	{"TOKEN_CONTRACT", str(func(c *Config) *string { return &c.Token.Contract })},
 	{"LISTENER_CONFIRMATIONS", integer(func(c *Config) *int64 { return &c.Listener.Confirmations })},
 	{"LISTENER_START_BLOCK", integer(func(c *Config) *int64 { return &c.Listener.StartBlock })},
