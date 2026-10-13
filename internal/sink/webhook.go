@@ -1,6 +1,8 @@
 package sink
 
 import (
+	"github.com/co-codin/USDT-Tracker/internal/httpx"
+
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -55,7 +57,7 @@ type Webhook struct {
 // NewWebhook validates cfg and creates the sink.
 func NewWebhook(cfg WebhookConfig) (*Webhook, error) {
 	if !strings.HasPrefix(cfg.URL, "http://") && !strings.HasPrefix(cfg.URL, "https://") {
-		return nil, fmt.Errorf("webhook: invalid url %q", cfg.URL)
+		return nil, fmt.Errorf("webhook: invalid url %s (want http:// or https://)", httpx.RedactURL(cfg.URL))
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 10 * time.Second
@@ -127,7 +129,8 @@ func (w *Webhook) post(ctx context.Context, deliveryID string, body []byte) erro
 		if ctx.Err() != nil {
 			return retry.Permanent(ctx.Err())
 		}
-		return err
+		// The URL may carry a token in its path or query: keep it out of logs.
+		return fmt.Errorf("webhook %s: %w", httpx.RedactURL(w.cfg.URL), httpx.ScrubURLError(err))
 	}
 	defer resp.Body.Close()
 	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

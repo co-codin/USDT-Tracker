@@ -1,6 +1,8 @@
 package eth
 
 import (
+	"github.com/co-codin/USDT-Tracker/internal/httpx"
+
 	"bytes"
 	"context"
 	"encoding/json"
@@ -99,17 +101,7 @@ func NewClient(o Options) *Client {
 
 // RedactURL returns scheme://host of an RPC URL, hiding paths, query strings
 // and userinfo that commonly carry provider API keys.
-func RedactURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return "<invalid url>"
-	}
-	r := u.Scheme + "://" + u.Host
-	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.User != nil {
-		r += "/***"
-	}
-	return r
-}
+func RedactURL(raw string) string { return httpx.RedactURL(raw) }
 
 // HTTPError is a non-2xx HTTP response.
 type HTTPError struct {

@@ -103,3 +103,19 @@ func TestWebhookInvalidURL(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestWebhookErrorsDoNotLeakURLSecrets(t *testing.T) {
+	_, err := NewWebhook(WebhookConfig{URL: "ftp://h/hook?token=SECRET123"})
+	if err == nil || strings.Contains(err.Error(), "SECRET123") {
+		t.Fatalf("NewWebhook err = %v", err)
+	}
+	w, err := NewWebhook(WebhookConfig{URL: "http://127.0.0.1:1/hook?token=SECRET123", MaxRetries: 1, Timeout: time.Second,
+		Backoff: retry.Backoff{Initial: time.Millisecond, Max: time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Send(context.Background(), sampleBatch())
+	if err == nil || strings.Contains(err.Error(), "SECRET123") || !strings.Contains(err.Error(), "127.0.0.1:1") {
+		t.Fatalf("send error = %v", err)
+	}
+}
