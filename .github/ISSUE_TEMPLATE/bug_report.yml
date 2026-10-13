@@ -1,0 +1,36 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Security issues: please use private reporting (see SECURITY.md), not an issue. Remove all secrets from logs and config."
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `usdt-tracker -version` or the image tag
+    validations:
+      required: true
+  - type: dropdown
+    id: chain
+    attributes:
+      label: Chain(s)
+      multiple: true
+      options: [TRON, TON, Ethereum]
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: How do you run it?
+      options: [Binary, Docker / Compose, Helm, Other]
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / config (redacted)
+      render: text

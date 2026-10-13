@@ -1,4 +1,4 @@
-# USDT-Tracker (tron-usdt-listener)
+# USDT-Tracker (usdt-tracker)
 
 [![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go)](go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -17,7 +17,7 @@ Typical uses: deposit detection for a payment flow, treasury / whale alerts, fee
 pipeline, compliance monitoring of a set of addresses.
 
 > ℹ️ **Naming:** the project is called **USDT-Tracker**; the Go module, repository folder and binary
-> keep the historical name `tron-usdt-listener` (it started as a TRON-only listener).
+> keep the historical name `usdt-tracker` (it started as a TRON-only listener).
 
 > 🔒 **Read-only by design.** The listener only calls public query endpoints. It never asks for,
 > stores or handles private keys and has no code path that signs or broadcasts transactions.
@@ -69,7 +69,7 @@ flowchart LR
     TONAPI["toncenter v3 / TON Index"]
     ETHRPC["Ethereum JSON-RPC"]
 
-    subgraph L["tron-usdt-listener"]
+    subgraph L["usdt-tracker"]
         S1["chain/tron/trc20.Source"]
         S2["chain/ton/jetton.Source"]
         S3["chain/eth/erc20.Source"]
@@ -113,7 +113,7 @@ Repository layout (chain-specific code lives under `internal/chain/<chain>`, so 
 e.g. Solana, can be added as `internal/chain/sol` implementing `chain.Source`):
 
 ```
-cmd/listener/                 main: flags, logging, signals, -healthcheck
+cmd/usdt-tracker/                 main: flags, logging, signals, -healthcheck
 internal/
   app/                        composition root (wires everything; used by main and e2e tests)
   chain/                      chain-agnostic Source interface + Block
@@ -155,7 +155,7 @@ Dockerfile, docker-compose.yml
 ```bash
 git clone https://github.com/co-codin/USDT-Tracker && cd USDT-Tracker
 make build
-./bin/tron-usdt-listener            # firehose: every USDT transfer as JSON on stdout
+./bin/usdt-tracker            # firehose: every USDT transfer as JSON on stdout
 ```
 
 With a config file and filters:
@@ -170,13 +170,13 @@ Only watch two addresses and large transfers ≥ 100k USDT, pretty-printed:
 
 ```bash
 FILTER_WATCH_ADDRESSES=TXXXX...,TYYYY... FILTER_MIN_AMOUNT=100000 \
-  ./bin/tron-usdt-listener 2>/dev/null | jq .
+  ./bin/usdt-tracker 2>/dev/null | jq .
 ```
 
 Re-process a historical range (cursor untouched):
 
 ```bash
-./bin/tron-usdt-listener -from 86883900 -to 86883910
+./bin/usdt-tracker -from 86883900 -to 86883910
 ```
 
 Application logs go to **stderr**; the stdout sink writes one JSON object per transfer to **stdout**.
@@ -342,7 +342,7 @@ The API is served on the existing ops server (`http.addr`, default `127.0.0.1:90
 
 ```bash
 export API_TOKEN=$(openssl rand -hex 32)       # or api.token in config.yaml
-SINK_POSTGRES_ENABLED=true DATABASE_URL=postgres://... API_TOKEN=$API_TOKEN ./bin/tron-usdt-listener
+SINK_POSTGRES_ENABLED=true DATABASE_URL=postgres://... API_TOKEN=$API_TOKEN ./bin/usdt-tracker
 ```
 
 **Compatibility:** `/v1` is stable within 0.x minor releases: fields may be added, never removed or
@@ -434,7 +434,7 @@ View transaction · 2026-10-12 21:25 UTC
 
 ```bash
 NOTIFY_BOT_ENABLED=true TELEGRAM_NOTIFY_BOT_TOKEN=<token from @BotFather> \
-SINK_POSTGRES_ENABLED=true DATABASE_URL=postgres://… CHAINS=tron,ton,eth ./bin/tron-usdt-listener
+SINK_POSTGRES_ENABLED=true DATABASE_URL=postgres://… CHAINS=tron,ton,eth ./bin/usdt-tracker
 ```
 
 - Commands: `/start`, `/help`, `/add <address>` (chain auto-detected: TRON `T…`, TON `UQ…`/`EQ…`/`0:…`,
@@ -473,7 +473,7 @@ curl -H "Authorization: Bearer $API_TOKEN" -o october.csv \
   "http://localhost:9090/v1/export.csv?address=TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv&from=2026-10-01&to=2026-10-31"
 
 # CLI (reads DATABASE_URL / config; no running listener needed)
-./bin/tron-usdt-listener export -address 0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed \
+./bin/usdt-tracker export -address 0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed \
   -from 2026-10-01 -to 2026-10-31 -o october.csv
 ```
 
@@ -505,9 +505,9 @@ Enable with `CHAINS=ton` (TON only) or `CHAINS=tron,ton` (both, concurrently):
 
 ```bash
 CHAINS=tron,ton TONCENTER_API_KEY=… TON_RPS=9 \
-TON_WATCH_ADDRESSES=UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg ./bin/tron-usdt-listener
+TON_WATCH_ADDRESSES=UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg ./bin/usdt-tracker
 # backfill a TON range (masterchain seqnos) when several chains are enabled:
-./bin/tron-usdt-listener -chain ton -from 98632900 -to 98632905
+./bin/usdt-tracker -chain ton -from 98632900 -to 98632905
 ```
 
 How it works (read-only, [toncenter v3 / TON Index](https://toncenter.com/api/v3/)):
@@ -558,7 +558,7 @@ Enable with `CHAINS=eth` or together with the others, e.g. `CHAINS=tron,ton,eth`
 
 ```bash
 CHAINS=tron,eth ETH_RPC_URL=https://mainnet.infura.io/v3/<key> \
-ETH_WATCH_ADDRESSES=0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed ./bin/tron-usdt-listener
+ETH_WATCH_ADDRESSES=0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed ./bin/usdt-tracker
 ```
 
 How it works (read-only, standard JSON-RPC – any node or provider works):
@@ -660,7 +660,7 @@ audience and show off the project:
 LARGE_ALERTS_ENABLED=true LARGE_ALERTS_CHAT_ID=@usdt_whales \
 LARGE_ALERTS_BOT_TOKEN=<bot token, or reuse TELEGRAM_BOT_TOKEN> LARGE_ALERTS_THRESHOLD=100000 \
 LARGE_ALERTS_FOOTER='via <a href="https://github.com/co-codin/USDT-Tracker">USDT-Tracker</a>' \
-CHAINS=tron,ton,eth ./bin/tron-usdt-listener
+CHAINS=tron,ton,eth ./bin/usdt-tracker
 ```
 
 ```
@@ -679,7 +679,7 @@ Etherscan · 2026-10-12 21:25 UTC
   `429 retry_after` is honoured. Pending alerts live in a bounded queue (`queue_size`, oldest dropped);
   restarts don't re-alert recently seen transfers. Best-effort – it never blocks the listeners.
 - Add the bot to the channel as an **administrator** (post messages). Metric:
-  `tron_listener_large_transfer_alerts_total{status="sent|failed|dropped"}`.
+  `usdt_tracker_large_transfer_alerts_total{status="sent|failed|dropped"}`.
 
 ### PostgreSQL
 
@@ -729,11 +729,11 @@ Suggested Prometheus alert (stalled chain):
 
 ```yaml
 - alert: UsdtTrackerStalled
-  expr: time() - tron_listener_last_processed_timestamp_seconds > 300
+  expr: time() - usdt_tracker_last_processed_timestamp_seconds > 300
   for: 5m
 ```
 
-Selected metrics (`tron_listener_*`, name kept for compatibility; per-chain ones carry a `chain`
+Selected metrics (`usdt_tracker_*`, name kept for compatibility; per-chain ones carry a `chain`
 label, `tron`, `ton` or `eth`): `head_block`, `safe_head_block`, `cursor_block`, `lag_blocks`,
 `blocks_processed_total`, `transfers_decoded_total`, `transfers_matched_total{chain,reason}`,
 `rpc_requests_total{chain,endpoint,status}`, `rpc_request_duration_seconds`, `rpc_retries_total{chain,endpoint,reason}`,
@@ -799,13 +799,13 @@ make test-integration TEST_DATABASE_URL='postgres://postgres:test@localhost:5543
 
 ## 中文简介
 
-**USDT-Tracker**（程序和目录名沿用 `tron-usdt-listener`）是一个用 Go 编写的 **只读** 多链 USDT 转账监听器，
+**USDT-Tracker**（程序和目录名沿用 `usdt-tracker`）是一个用 Go 编写的 **只读** 多链 USDT 转账监听器，
 支持 **TRON（TRC-20）、TON（USD₮ jetton）和以太坊（ERC-20）**，可单独或同时运行，每条链独立游标。
 功能包括：地址监控（转入/转出）和大额阈值过滤；输出到 stdout JSON、HMAC-SHA256 签名 Webhook、Telegram
 和 PostgreSQL；超过 10 万 USDT 自动发到 Telegram 频道的大额提醒；按地址导出 CSV 流水；用户自助的
 Telegram 收款通知机器人；运行时增删地址的管理 API（`/v1/addresses`）；按链设置确认数（TRON 20、TON 3、
 以太坊 12）、去重、退避重试、Prometheus `/metrics` 与 `/healthz`；Docker 和 Helm 部署。不需要也不会接触
-任何私钥，从不发送交易。快速开始：`make build && ./bin/tron-usdt-listener` 或 `docker compose up -d --build`。
+任何私钥，从不发送交易。快速开始：`make build && ./bin/usdt-tracker` 或 `docker compose up -d --build`。
 商业支持（定制接入、维护、托管）见上文 Commercial support。
 
 **TON 支持：** 设置 `CHAINS=ton`（只监听 TON）或 `CHAINS=tron,ton`（两条链同时运行，各自独立游标，
@@ -835,7 +835,7 @@ TON 地址写在 `ton.watch_addresses` / `TON_WATCH_ADDRESSES`，也可以通过
 机器人需要是频道管理员。
 
 **CSV / 会计导出：** `GET /v1/export.csv?address=&chain=&from=&to=`（和管理 API 同一个 Bearer
-`API_TOKEN`）或命令行 `tron-usdt-listener export -address … -from 2026-10-01 -to 2026-10-31 -o out.csv`，
+`API_TOKEN`）或命令行 `usdt-tracker export -address … -from 2026-10-01 -to 2026-10-31 -o out.csv`，
 从 Postgres 流式导出某个地址的 USDT 流水：时间(UTC)、链、交易哈希、from/to、相对该地址的方向
 (in/out/self)、金额、备注、浏览器链接。标准 CSV 转义并防止表格公式注入。只能导出已入库的转账，
 所以要先把地址加入监听列表。
@@ -848,14 +848,14 @@ Postgres），用户在机器人里发 `/add <地址>`（自动识别 TRON / TON
 
 ## Кратко на русском
 
-**USDT-Tracker** (бинарник и папка исторически называются `tron-usdt-listener`) — **read-only** сервис на Go
+**USDT-Tracker** (бинарник и папка исторически называются `usdt-tracker`) — **read-only** сервис на Go
 для отслеживания переводов USDT в сетях **TRON (TRC-20), TON (жеттон USD₮) и Ethereum (ERC-20)** — по
 отдельности или одновременно, у каждой сети свой курсор. Возможности: фильтр по адресам (входящие/исходящие)
 и порогу; вывод в stdout (JSON), webhook с подписью HMAC-SHA256, Telegram и PostgreSQL; канал крупных
 переводов (≥ 100 000 USDT) в Telegram; CSV-выгрузка по адресу; бот уведомлений в Telegram для пользователей;
 admin API для адресов без перезапуска (`/v1/addresses`); подтверждения по сетям (TRON 20, TON 3, Ethereum 12),
 дедупликация, ретраи, метрики Prometheus и `/healthz`; Docker и Helm. Приватные ключи не используются,
-транзакции не отправляются. Быстрый старт: `make build && ./bin/tron-usdt-listener` или
+транзакции не отправляются. Быстрый старт: `make build && ./bin/usdt-tracker` или
 `docker compose up -d --build`. Коммерческая поддержка — см. раздел Commercial support.
 
 **TON:** `CHAINS=ton` (только TON) или `CHAINS=tron,ton` (обе сети параллельно, у каждой свой курсор,
@@ -880,7 +880,7 @@ admin API для адресов без перезапуска (`/v1/addresses`);
 сообщение), 429 обрабатывается, очередь ограничена. Бот должен быть администратором канала.
 
 **CSV-выгрузка для бухгалтерии:** `GET /v1/export.csv?address=&chain=&from=&to=` (тот же Bearer
-`API_TOKEN`) или CLI `tron-usdt-listener export -address … -from … -to … -o out.csv` — потоковая выписка
+`API_TOKEN`) или CLI `usdt-tracker export -address … -from … -to … -o out.csv` — потоковая выписка
 по адресу из Postgres: время (UTC), сеть, хеш, from/to, направление (in/out/self), сумма, memo, ссылка
 на эксплорер. Экранирование по RFC 4180 и защита от формул в таблицах. Выгружаются только сохранённые
 переводы — адрес нужно заранее добавить в список отслеживания.
@@ -905,6 +905,13 @@ USDT-Tracker is **open core**: the code here is free under MIT. If you need help
 integration, ongoing maintenance / monitoring and a hosted setup. Contact: GitHub
 [@co-codin](https://github.com/co-codin) or Telegram [@zzwwyy112233](https://t.me/zzwwyy112233).
 Payments are accepted in USDT.
+
+## Contributing & security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and
+[SECURITY.md](SECURITY.md) (report vulnerabilities privately). Release notes: [CHANGELOG.md](CHANGELOG.md).
+Upgrading from before 0.2.0: the binary is now `usdt-tracker` and metrics use the `usdt_tracker_`
+prefix – see the breaking changes in the changelog.
 
 ## License
 
