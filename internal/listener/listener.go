@@ -36,9 +36,11 @@ type Config struct {
 	DispatchTimeout time.Duration // per delivery attempt; in-flight blocks finish on shutdown (default 30s)
 	Backoff         retry.Backoff // backoff for loop-level errors
 	Chain           string        // chain name for metrics/logs (default "tron")
-	// Taps see every decoded transfer of each confirmed block before
-	// filtering (e.g. the large-transfer alert channel). They must not block;
-	// they are not called in backfill mode.
+	// Taps see every decoded transfer (unfiltered) of each confirmed block
+	// once the block was delivered and its cursor saved (e.g. the
+	// large-transfer channel, the notify bot): at most once per block, also
+	// across restarts. They must not block; they are not called in backfill
+	// mode.
 	Taps []Tap
 }
 
@@ -287,11 +289,6 @@ func (l *Listener) process(ctx context.Context, b chain.Block, persist bool) err
 			return fmt.Errorf("block %d: %w", b.Number, err)
 		}
 	}
-	if persist {
-		for _, tap := range l.cfg.Taps {
-			tap(ctx, b)
-		}
-	}
 	matched := l.filter.Apply(b.Transfers)
 	if l.m != nil {
 		l.m.TransfersDecoded.Add(float64(len(b.Transfers)))
@@ -324,6 +321,14 @@ func (l *Listener) process(ctx context.Context, b chain.Block, persist bool) err
 		cancel()
 		if err != nil {
 			return fmt.Errorf("save cursor: %w", err)
+		}
+		// Taps (large-transfer channel, notify bot) run only once the block
+		// is committed: a block retried because a sink failed, or replayed
+		// after a restart before its cursor was saved, is tapped exactly
+		// once. Taps only enqueue, so a crash right here can lose (never
+		// duplicate) their messages.
+		for _, tap := range l.cfg.Taps {
+			tap(ctx, b)
 		}
 	}
 	l.progress(b.Number)

@@ -256,3 +256,53 @@ func (r *recipientSource) Block(ctx context.Context, n int64) (chain.Block, erro
 	}
 	return b, err
 }
+
+// failingStore fails the first Save of block failAt.
+type failingStore struct {
+	cursor.MemoryStore
+	mu     sync.Mutex
+	failAt int64
+}
+
+func (s *failingStore) Save(ctx context.Context, st cursor.State) error {
+	s.mu.Lock()
+	if st.LastBlock == s.failAt {
+		s.failAt = -1
+		s.mu.Unlock()
+		return errors.New("db down")
+	}
+	s.mu.Unlock()
+	return s.MemoryStore.Save(ctx, st)
+}
+
+// Taps fire once per block, only after delivery and the cursor save, so a
+// block retried after a sink or cursor failure is not tapped twice.
+func TestTapsRunOncePerCommittedBlock(t *testing.T) {
+	src := &fakeSource{head: 30}
+	store := &failingStore{failAt: 12}
+	_ = store.Save(context.Background(), cursor.State{LastBlock: 9})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rec := &recorder{stopAt: 20, cancel: cancel, failAt: map[int64]int{11: 2}}
+	var mu sync.Mutex
+	tapped := map[int64]int{}
+	cfg := fastCfg()
+	cfg.Taps = []Tap{func(_ context.Context, b chain.Block) {
+		mu.Lock()
+		tapped[b.Number]++
+		mu.Unlock()
+		if st, _ := store.Load(context.Background()); st.LastBlock != b.Number {
+			t.Errorf("tap for block %d before its cursor was saved (cursor %d)", b.Number, st.LastBlock)
+		}
+	}}
+	if err := New(cfg, src, allFilter(t), rec, store, nil, nil).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for n := int64(10); n <= 20; n++ {
+		if tapped[n] != 1 {
+			t.Fatalf("block %d tapped %d times (%v)", n, tapped[n], tapped)
+		}
+	}
+}
