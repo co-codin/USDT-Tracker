@@ -43,7 +43,6 @@ func TestHeadFailuresAreRetriedWithMetrics(t *testing.T) {
 	cfg := fastCfg()
 	cfg.Chain = "eth"
 	l := New(cfg, src, allFilter(t), rec, &cursor.MemoryStore{}, m, nil)
-	cfg.StartBlock = 0
 	if err := l.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +81,7 @@ func TestHeadFailsMidLoop(t *testing.T) {
 
 type errStore struct{ cursor.MemoryStore }
 
-func (errStore) Load(context.Context) (cursor.State, error) {
+func (*errStore) Load(context.Context) (cursor.State, error) {
 	return cursor.State{}, errors.New("db down")
 }
 
