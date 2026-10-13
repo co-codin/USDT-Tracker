@@ -25,7 +25,13 @@ type Source struct {
 	dec      *Decoder
 	log      *slog.Logger
 	onDecErr func()
+	verify   bool
 }
+
+// VerifyTxCount makes Block compare the number of transaction infos with the
+// block's transaction count (one extra getblockbynum per non-empty block) so
+// a node returning a partial info list is retried instead of trusted.
+func (s *Source) VerifyTxCount(on bool) { s.verify = on }
 
 // NewSource creates a source. onDecodeError (optional) is called for every
 // malformed log so it can be counted.
@@ -66,6 +72,15 @@ func (s *Source) Block(ctx context.Context, num int64) (chain.Block, error) {
 	for _, in := range infos {
 		if in.BlockNumber != num {
 			return chain.Block{}, fmt.Errorf("%w: asked block %d, got tx %s in block %d", chain.ErrInconsistent, num, in.ID, in.BlockNumber)
+		}
+	}
+	if s.verify {
+		b, err := s.api.BlockByNum(ctx, num)
+		if err != nil {
+			return chain.Block{}, err
+		}
+		if b.TxCount != len(infos) {
+			return chain.Block{}, fmt.Errorf("%w: block %d has %d txs but %d tx infos", chain.ErrInconsistent, num, b.TxCount, len(infos))
 		}
 	}
 	transfers, errs := s.dec.DecodeBlock(infos)

@@ -83,3 +83,22 @@ func TestHeadAndDecodeErrorsAreCounted(t *testing.T) {
 		t.Fatalf("decErrs=%d block=%+v", decErrs, b)
 	}
 }
+
+func TestVerifyTxCountRejectsPartialInfos(t *testing.T) {
+	infos := []tron.TransactionInfo{{ID: "aa", BlockNumber: 7}, {ID: "bb", BlockNumber: 7}}
+	api := &fakeAPI{infos: infos, block: tron.Block{BlockHeader: tron.BlockHeader{Number: 7}, TxCount: 3}}
+	src := newSrc(api)
+	src.VerifyTxCount(true)
+	if _, err := src.Block(context.Background(), 7); !errors.Is(err, chain.ErrInconsistent) {
+		t.Fatalf("partial infos accepted: %v", err)
+	}
+	api.block.TxCount = 2
+	if b, err := src.Block(context.Background(), 7); err != nil || b.TxCount != 2 {
+		t.Fatalf("%+v %v", b, err)
+	}
+	api.blkCall = 0
+	src.VerifyTxCount(false)
+	if _, err := src.Block(context.Background(), 7); err != nil || api.blkCall != 0 {
+		t.Fatalf("verify off still called getblockbynum: %v %d", err, api.blkCall)
+	}
+}

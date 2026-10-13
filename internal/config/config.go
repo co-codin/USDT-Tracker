@@ -81,6 +81,10 @@ type Tron struct {
 	Timeout    Duration `yaml:"timeout"`
 	RPS        float64  `yaml:"rps"`
 	MaxRetries int      `yaml:"max_retries"`
+	// VerifyTxCount cross-checks every non-empty block's transaction-info
+	// count against getblockbynum (one extra request per block, default
+	// true). Disable only to speed up large backfills on a trusted node.
+	VerifyTxCount bool `yaml:"verify_tx_count"`
 }
 
 // TON configures the TON listener (toncenter v3 index API). Block numbers
@@ -274,7 +278,7 @@ func Default() Config {
 	return Config{
 		Log:    Log{Level: "info", Format: "json"},
 		Chains: []string{model.ChainTron},
-		Tron:   Tron{APIURL: tron.DefaultBaseURL, Timeout: Duration(15 * time.Second), RPS: 3, MaxRetries: 8},
+		Tron:   Tron{APIURL: tron.DefaultBaseURL, Timeout: Duration(15 * time.Second), RPS: 3, MaxRetries: 8, VerifyTxCount: true},
 		TON: TON{
 			APIURL: ton.DefaultBaseURL, Timeout: Duration(15 * time.Second), RPS: 1, MaxRetries: 8,
 			JettonMaster: ton.USDTMaster, Symbol: "USDT", Decimals: 6,
@@ -649,6 +653,7 @@ var envBindings = []envBinding{
 	{"LOG_FORMAT", str(func(c *Config) *string { return &c.Log.Format })},
 	{"TRON_API_URL", str(func(c *Config) *string { return &c.Tron.APIURL })},
 	{"TRON_PRO_API_KEY", str(func(c *Config) *string { return &c.Tron.APIKey })},
+	{"TRON_VERIFY_TX_COUNT", boolean(func(c *Config) *bool { return &c.Tron.VerifyTxCount })},
 	{"TRON_RPS", func(c *Config, v string) error {
 		f, err := strconv.ParseFloat(v, 64)
 		c.Tron.RPS = f

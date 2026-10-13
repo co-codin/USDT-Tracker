@@ -16,6 +16,7 @@ tron:
   timeout: 15s
   rps: 3                             # client-side request rate limit; keep low without an API key
   max_retries: 8                     # per request, exponential backoff, honours 429 Retry-After
+  verify_tx_count: true   # env TRON_VERIFY_TX_COUNT; cross-check tx-info count per block (+1 request/block)
 
 token:
   contract: TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t   # USDT (TRC-20) on TRON mainnet

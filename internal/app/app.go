@@ -256,7 +256,9 @@ func (a *App) buildSource(c string) (chain.Source, error) {
 		log.Info("tron source", "api_url", cfg.Tron.APIURL, "api_key_set", cfg.Tron.APIKey != "",
 			"token", cfg.Token.Symbol, "contract", contract.String())
 		dec := trc20.New(trc20.Token{Contract: contract, Symbol: cfg.Token.Symbol, Decimals: cfg.Token.Decimals})
-		return trc20.NewSource(client, dec, log, cm.DecodeErrors.Inc), nil
+		src := trc20.NewSource(client, dec, log, cm.DecodeErrors.Inc)
+		src.VerifyTxCount(cfg.Tron.VerifyTxCount)
+		return src, nil
 	case model.ChainTON:
 		master, err := ton.ParseAddress(cfg.TON.JettonMaster)
 		if err != nil {

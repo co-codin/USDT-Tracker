@@ -266,6 +266,7 @@ See [`config.example.yaml`](config.example.yaml) for every option with comments.
 | `tron.api_url` | `TRON_API_URL` | `https://api.trongrid.io` | Any TRON full-node HTTP API |
 | `tron.api_key` | `TRON_PRO_API_KEY` | – | Optional TronGrid key (higher limits) |
 | `tron.rps` | `TRON_RPS` | `3` | Client-side request rate limit |
+| `tron.verify_tx_count` | `TRON_VERIFY_TX_COUNT` | `true` | Cross-check each non-empty block's transaction-info count with `getblockbynum` (one extra request per block) so a node returning a partial list is retried; disable only for fast backfills on a trusted node |
 | `tron.timeout` / `tron.max_retries` | – | `15s` / `8` | Per request |
 | `token.contract` | `TOKEN_CONTRACT` | USDT | Any TRC-20 contract (base58 or hex) |
 | `token.symbol` / `token.decimals` | – | `USDT` / `6` | |
