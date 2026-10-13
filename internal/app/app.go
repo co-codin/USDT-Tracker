@@ -19,12 +19,6 @@ import (
 
 	"github.com/co-codin/USDT-Tracker/internal/alert"
 	"github.com/co-codin/USDT-Tracker/internal/chain"
-	"github.com/co-codin/USDT-Tracker/internal/chain/eth"
-	"github.com/co-codin/USDT-Tracker/internal/chain/eth/erc20"
-	"github.com/co-codin/USDT-Tracker/internal/chain/ton"
-	"github.com/co-codin/USDT-Tracker/internal/chain/ton/jetton"
-	"github.com/co-codin/USDT-Tracker/internal/chain/tron"
-	"github.com/co-codin/USDT-Tracker/internal/chain/tron/trc20"
 	"github.com/co-codin/USDT-Tracker/internal/chainaddr"
 	"github.com/co-codin/USDT-Tracker/internal/config"
 	"github.com/co-codin/USDT-Tracker/internal/cursor"
@@ -212,11 +206,10 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		}))
 	}
 
-	if cfg.HasChain(model.ChainTron) && cfg.Tron.APIKey == "" && sources[model.ChainTron] != nil {
-		log.Warn("TRON_PRO_API_KEY not set: using public rate limits, keep tron.rps low")
-	}
-	if sources[model.ChainTON] != nil && cfg.TON.APIKey == "" {
-		log.Warn("TONCENTER_API_KEY not set: keyless toncenter allows ~1 req/s, which cannot keep up with mainnet head (2 requests per masterchain block); get a key from @tonapibot and raise TON_RPS")
+	for c := range sources {
+		if warn := chainDefs[c].warn; warn != nil {
+			warn(cfg, log)
+		}
 	}
 	cursors := make([]string, 0, len(a.Pipelines))
 	for _, p := range a.Pipelines {
@@ -240,58 +233,11 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 }
 
 func (a *App) buildSource(c string) (chain.Source, error) {
-	cfg, opts, log := a.cfg, a.opts, a.log
-	cm := a.Metrics.For(c)
-	switch c {
-	case model.ChainTron:
-		contract, err := tron.ParseAddress(cfg.Token.Contract)
-		if err != nil {
-			return nil, err
-		}
-		client := tron.NewClient(tron.Options{
-			BaseURL: cfg.Tron.APIURL, APIKey: cfg.Tron.APIKey, Timeout: cfg.Tron.Timeout.D(),
-			RPS: cfg.Tron.RPS, MaxRetries: cfg.Tron.MaxRetries, Backoff: opts.Backoff,
-			UserAgent: "tron-usdt-listener/" + opts.Version, Observer: cm, Logger: log,
-		})
-		log.Info("tron source", "api_url", cfg.Tron.APIURL, "api_key_set", cfg.Tron.APIKey != "",
-			"token", cfg.Token.Symbol, "contract", contract.String())
-		dec := trc20.New(trc20.Token{Contract: contract, Symbol: cfg.Token.Symbol, Decimals: cfg.Token.Decimals})
-		src := trc20.NewSource(client, dec, log, cm.DecodeErrors.Inc)
-		src.VerifyTxCount(cfg.Tron.VerifyTxCount)
-		return src, nil
-	case model.ChainTON:
-		master, err := ton.ParseAddress(cfg.TON.JettonMaster)
-		if err != nil {
-			return nil, fmt.Errorf("ton.jetton_master: %w", err)
-		}
-		client := ton.NewClient(ton.Options{
-			BaseURL: cfg.TON.APIURL, APIKey: cfg.TON.APIKey, Timeout: cfg.TON.Timeout.D(),
-			RPS: cfg.TON.RPS, MaxRetries: cfg.TON.MaxRetries, Backoff: opts.Backoff,
-			UserAgent: "usdt-tracker/" + opts.Version, Observer: cm, Logger: log,
-		})
-		log.Info("ton source", "api_url", cfg.TON.APIURL, "api_key_set", cfg.TON.APIKey != "",
-			"token", cfg.TON.Symbol, "jetton_master", master.Friendly(true, false))
-		return jetton.NewSource(client, jetton.Token{Master: master, Symbol: cfg.TON.Symbol, Decimals: cfg.TON.Decimals},
-			log.With("chain", c), cm.DecodeErrors.Inc), nil
-	case model.ChainETH:
-		contract, err := eth.NormalizeAddress(cfg.ETH.Contract)
-		if err != nil {
-			return nil, fmt.Errorf("eth.contract: %w", err)
-		}
-		client := eth.NewClient(eth.Options{
-			URL: cfg.ETH.RPCURL, Timeout: cfg.ETH.Timeout.D(), RPS: cfg.ETH.RPS, MaxRetries: cfg.ETH.MaxRetries,
-			Backoff: opts.Backoff, UserAgent: "usdt-tracker/" + opts.Version, Observer: cm, Logger: log,
-		})
-		// The RPC URL may embed a provider key: log only scheme://host.
-		log.Info("eth source", "rpc", eth.RedactURL(cfg.ETH.RPCURL), "token", cfg.ETH.Symbol,
-			"contract", eth.Checksum(contract), "log_chunk", cfg.ETH.LogChunk, "head_tag", cfg.ETH.HeadTag)
-		return erc20.NewSource(client, erc20.Token{Contract: contract, Symbol: cfg.ETH.Symbol, Decimals: cfg.ETH.Decimals},
-			cfg.ETH.LogChunk, log.With("chain", c), erc20.Options{
-				HeadTag: eth.HeadTag(cfg.ETH.HeadTag), OnDecodeError: cm.DecodeErrors.Inc, OnReorg: cm.ReorgsDetected.Inc,
-			}), nil
-	default:
+	def, ok := chainDefs[c]
+	if !ok {
 		return nil, fmt.Errorf("unknown chain %q", c)
 	}
+	return def.newSource(a, a.Metrics.For(c))
 }
 
 func (a *App) cursorStore(c string) (cursor.Store, string) {
@@ -299,17 +245,14 @@ func (a *App) cursorStore(c string) (cursor.Store, string) {
 	case a.opts.Backfill:
 		return &cursor.MemoryStore{}, "memory (backfill)"
 	case a.pg != nil:
-		if c == model.ChainTron {
+		if chainDefs[c].bareCursorName {
 			return a.pg, "postgres:" + a.pg.CursorName()
 		}
 		name := a.pg.CursorName() + ":" + c
 		return a.pg.Cursor(name), "postgres:" + name
-	case c == model.ChainTON:
-		return cursor.NewFileStore(a.cfg.TON.CursorFile), "file:" + a.cfg.TON.CursorFile
-	case c == model.ChainETH:
-		return cursor.NewFileStore(a.cfg.ETH.CursorFile), "file:" + a.cfg.ETH.CursorFile
 	default:
-		return cursor.NewFileStore(a.cfg.Cursor.File), "file:" + a.cfg.Cursor.File
+		f := chainDefs[c].cursorFile(a.cfg)
+		return cursor.NewFileStore(f), "file:" + f
 	}
 }
 
@@ -319,27 +262,18 @@ func listenerConfig(cfg config.Config, c string, b retry.Backoff) listener.Confi
 		Chain: c, Confirmations: l.Confirmations, PollInterval: l.PollInterval.D(), StartBlock: l.StartBlock,
 		BatchSize: l.BatchSize, Concurrency: l.Concurrency, DispatchTimeout: l.DispatchTimeout.D(), Backoff: b,
 	}
-	if c == model.ChainTON {
-		t := cfg.TON
-		lc.Confirmations, lc.PollInterval, lc.StartBlock = t.Confirmations, t.PollInterval.D(), t.StartBlock
-		lc.BatchSize, lc.Concurrency = t.BatchSize, t.Concurrency
-	}
-	if c == model.ChainETH {
-		e := cfg.ETH
-		lc.Confirmations, lc.PollInterval, lc.StartBlock = e.Confirmations, e.PollInterval.D(), e.StartBlock
-		lc.BatchSize, lc.Concurrency = e.BatchSize, 1 // ranges are fetched with chunked eth_getLogs
+	if tune := chainDefs[c].tuneListener; tune != nil {
+		tune(cfg, &lc)
 	}
 	return lc
 }
 
 func chainMinAmount(cfg config.Config, c string) (*big.Int, error) {
-	switch c {
-	case model.ChainTON:
-		return cfg.TONMinAmount()
-	case model.ChainETH:
-		return cfg.ETHMinAmount()
+	def, ok := chainDefs[c]
+	if !ok {
+		return nil, fmt.Errorf("unknown chain %q", c)
 	}
-	return cfg.MinAmount()
+	return def.minAmount(cfg)
 }
 
 // Run starts the HTTP server (if enabled) and processes blocks on every
@@ -456,14 +390,10 @@ func staticAddresses(cfg config.Config, chains []string) []string {
 
 // chainWatchAddresses returns the static watch list configured for chain c.
 func chainWatchAddresses(cfg config.Config, c string) []string {
-	switch c {
-	case model.ChainTON:
-		return cfg.TON.WatchAddresses
-	case model.ChainETH:
-		return cfg.ETH.WatchAddresses
-	default:
-		return cfg.Filter.WatchAddresses
+	if def, ok := chainDefs[c]; ok {
+		return def.watchAddresses(cfg)
 	}
+	return nil
 }
 
 func staticFilterConfig(cfg config.Config, c string, minAmount *big.Int) filter.Config {
