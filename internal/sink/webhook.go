@@ -123,7 +123,7 @@ func (w *Webhook) post(ctx context.Context, deliveryID string, body []byte) erro
 		req.Header.Set(webhooksig.HeaderTimestamp, strconv.FormatInt(ts, 10))
 		req.Header.Set(webhooksig.HeaderSignature, webhooksig.Sign([]byte(w.cfg.Secret), ts, body))
 	}
-	resp, err := w.hc.Do(req)
+	resp, err := w.hc.Do(req) //nolint:bodyclose // closed by httpx.ReadBody
 	if err != nil {
 		if ctx.Err() != nil {
 			return retry.Permanent(ctx.Err())

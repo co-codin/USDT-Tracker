@@ -439,7 +439,7 @@ func (c *Client) post(ctx context.Context, label string, body []byte) ([]byte, e
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.ua)
 	start := time.Now()
-	resp, err := c.hc.Do(req)
+	resp, err := c.hc.Do(req) //nolint:bodyclose // closed by httpx.ReadBody
 	if err != nil {
 		c.observe(label, "network_error", start)
 		if ctx.Err() != nil {

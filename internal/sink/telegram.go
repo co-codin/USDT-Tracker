@@ -208,7 +208,7 @@ func (t *Telegram) sendMessage(ctx context.Context, text string) error {
 			return retry.Permanent(err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := t.hc.Do(req)
+		resp, err := t.hc.Do(req) //nolint:bodyclose // closed by httpx.ReadBody
 		if err != nil {
 			if ctx.Err() != nil {
 				return retry.Permanent(ctx.Err())

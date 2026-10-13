@@ -230,7 +230,7 @@ func (c *Client) doOnce(ctx context.Context, path string, payload []byte, out an
 	}
 
 	start := time.Now()
-	resp, err := c.hc.Do(req)
+	resp, err := c.hc.Do(req) //nolint:bodyclose // closed by httpx.ReadBody
 	if err != nil {
 		c.observe(path, "network_error", start)
 		if ctx.Err() != nil {
