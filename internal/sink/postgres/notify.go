@@ -26,16 +26,17 @@ func (s *Store) Notify() *NotifyStore {
 	return &NotifyStore{pool: s.pool, name: "notify:" + s.cursorName}
 }
 
-// EnsureUser implements notify.Store.
-func (n *NotifyStore) EnsureUser(ctx context.Context, chatID int64, username string) (notify.User, error) {
-	u := notify.User{ChatID: chatID}
-	err := n.pool.QueryRow(ctx, `INSERT INTO notify_users (chat_id, username) VALUES ($1, NULLIF($2, ''))
-		ON CONFLICT (chat_id) DO UPDATE SET blocked = FALSE, username = COALESCE(EXCLUDED.username, notify_users.username)
-		RETURNING plan, blocked`, chatID, username).Scan(&u.Plan, &u.Blocked)
-	if err != nil {
-		return u, fmt.Errorf("postgres: notify user: %w", err)
+// GetUser implements notify.Store.
+func (n *NotifyStore) GetUser(ctx context.Context, chatID int64) (notify.User, bool, error) {
+	u := notify.User{ChatID: chatID, Plan: notify.PlanFree}
+	err := n.pool.QueryRow(ctx, `SELECT plan, blocked FROM notify_users WHERE chat_id = $1`, chatID).Scan(&u.Plan, &u.Blocked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return u, false, nil
 	}
-	return u, nil
+	if err != nil {
+		return u, false, fmt.Errorf("postgres: notify user: %w", err)
+	}
+	return u, true, nil
 }
 
 // SetPlan changes a user's plan (operator / billing hook).
@@ -45,10 +46,31 @@ func (n *NotifyStore) SetPlan(ctx context.Context, chatID int64, plan string) er
 }
 
 // AddSub implements notify.Store. The user row is locked so concurrent
-// /add commands cannot exceed the plan limit.
-func (n *NotifyStore) AddSub(ctx context.Context, chatID int64, chain, address string, limit func(string) int) error {
+// /add commands cannot exceed the plan limit; bot-wide caps are checked
+// under a transaction-scoped advisory lock.
+func (n *NotifyStore) AddSub(ctx context.Context, chatID int64, username, chain, address string, lim notify.Limits) error {
 	return pgx.BeginFunc(ctx, n.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO notify_users (chat_id) VALUES ($1) ON CONFLICT DO NOTHING`, chatID); err != nil {
+		if lim.MaxUsers > 0 || lim.MaxTotalSubs > 0 {
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('usdt-tracker:notify-capacity'))`); err != nil {
+				return err
+			}
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM notify_users WHERE chat_id = $1)`, chatID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists && lim.MaxUsers > 0 {
+			var users int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM notify_users`).Scan(&users); err != nil {
+				return err
+			}
+			if users >= lim.MaxUsers {
+				return notify.ErrCapacity
+			}
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO notify_users (chat_id, username) VALUES ($1, NULLIF($2, ''))
+			ON CONFLICT (chat_id) DO UPDATE SET blocked = FALSE, username = COALESCE(EXCLUDED.username, notify_users.username)`,
+			chatID, username); err != nil {
 			return err
 		}
 		var plan string
@@ -56,16 +78,25 @@ func (n *NotifyStore) AddSub(ctx context.Context, chatID int64, chain, address s
 		if err := tx.QueryRow(ctx, `SELECT plan FROM notify_users WHERE chat_id = $1 FOR UPDATE`, chatID).Scan(&plan); err != nil {
 			return err
 		}
-		var exists bool
+		var dup bool
 		if err := tx.QueryRow(ctx, `SELECT count(*), bool_or(chain = $2 AND address = $3) IS TRUE FROM notify_subscriptions WHERE chat_id = $1`,
-			chatID, chain, address).Scan(&cnt, &exists); err != nil {
+			chatID, chain, address).Scan(&cnt, &dup); err != nil {
 			return err
 		}
-		if exists {
+		if dup {
 			return notify.ErrExists
 		}
-		if cnt >= limit(plan) {
+		if cnt >= lim.PerPlan(plan) {
 			return notify.ErrLimit
+		}
+		if lim.MaxTotalSubs > 0 {
+			var total int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM notify_subscriptions`).Scan(&total); err != nil {
+				return err
+			}
+			if total >= lim.MaxTotalSubs {
+				return notify.ErrCapacity
+			}
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO notify_subscriptions (chat_id, chain, address) VALUES ($1, $2, $3)`, chatID, chain, address)
 		var pe *pgconn.PgError

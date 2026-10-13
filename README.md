@@ -428,6 +428,13 @@ SINK_POSTGRES_ENABLED=true DATABASE_URL=postgres://… CHAINS=tron,ton,eth ./bin
   `premium_limit` (50) addresses. There is no payment code: upgrade a user with
   `UPDATE notify_users SET plan = 'premium' WHERE chat_id = …` (or wire your billing to it).
 - Use a separate bot token from the alert bots (one `getUpdates` consumer per token).
+- **Abuse limits:** private chats only (in groups any member could change the group's
+  subscriptions, so the bot only answers with a hint there); each chat may run
+  `commands_per_minute` commands (default 20, burst 5 – extras are dropped silently); command replies
+  share the global send rate with notifications; a user row is created only on the first `/add`;
+  `/add` is refused with a "capacity" message once `max_users` (10000) users or
+  `max_total_subs` (50000) subscriptions exist (`0` = unlimited). Env: `NOTIFY_MAX_USERS`,
+  `NOTIFY_MAX_TOTAL_SUBS`, `NOTIFY_COMMANDS_PER_MINUTE`.
 
 ## CSV / accounting export
 

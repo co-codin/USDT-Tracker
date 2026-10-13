@@ -251,6 +251,11 @@ type NotifyBot struct {
 	MinAmount    string   `yaml:"min_amount"`    // skip dust / zero-value poisoning transfers (default 0.01)
 	PollTimeout  Duration `yaml:"poll_timeout"`  // getUpdates long-poll timeout (default 50s)
 	APIBase      string   `yaml:"api_base"`      // default https://api.telegram.org
+	// MaxUsers / MaxTotalSubs cap bot-wide users and subscriptions (0 = unlimited).
+	MaxUsers     int `yaml:"max_users"`
+	MaxTotalSubs int `yaml:"max_total_subs"`
+	// CommandsPerMinute is the per-chat command rate limit (default 20).
+	CommandsPerMinute int `yaml:"commands_per_minute"`
 }
 
 // PostgresSink config.
@@ -295,7 +300,8 @@ func Default() Config {
 			Telegram: TelegramSink{MaxPerBlock: 10, BestEffort: true},
 			Postgres: PostgresSink{CursorName: "default"},
 		},
-		NotifyBot: NotifyBot{FreeLimit: 3, PremiumLimit: 50, MinAmount: "0.01", PollTimeout: Duration(50 * time.Second)},
+		NotifyBot: NotifyBot{FreeLimit: 3, PremiumLimit: 50, MinAmount: "0.01", PollTimeout: Duration(50 * time.Second),
+			MaxUsers: 10000, MaxTotalSubs: 50000, CommandsPerMinute: 20},
 		Alerts: Alerts{LargeTransfers: LargeTransferAlerts{
 			Threshold: "100000", Interval: Duration(3 * time.Second), MaxPerMessage: 10, QueueSize: 1000,
 		}},
@@ -445,6 +451,9 @@ func (c *Config) Validate() error {
 		}
 		if !s.Postgres.Enabled {
 			add("notify_bot needs the postgres sink (SINK_POSTGRES_ENABLED=true, DATABASE_URL) to store users and subscriptions")
+		}
+		if nb.MaxUsers < 0 || nb.MaxTotalSubs < 0 || nb.CommandsPerMinute < 0 {
+			add("notify_bot: max_users and max_total_subs must be >= 0 (0 = unlimited) and commands_per_minute >= 0 (0 = default 20)")
 		}
 		if nb.FreeLimit < 1 || nb.PremiumLimit < nb.FreeLimit {
 			add("notify_bot: free_limit must be >= 1 and premium_limit >= free_limit")
@@ -715,6 +724,9 @@ var envBindings = []envBinding{
 	{"TELEGRAM_NOTIFY_BOT_TOKEN", str(func(c *Config) *string { return &c.NotifyBot.BotToken })},
 	{"NOTIFY_FREE_LIMIT", intVal(func(c *Config) *int { return &c.NotifyBot.FreeLimit })},
 	{"NOTIFY_PREMIUM_LIMIT", intVal(func(c *Config) *int { return &c.NotifyBot.PremiumLimit })},
+	{"NOTIFY_MAX_USERS", intVal(func(c *Config) *int { return &c.NotifyBot.MaxUsers })},
+	{"NOTIFY_MAX_TOTAL_SUBS", intVal(func(c *Config) *int { return &c.NotifyBot.MaxTotalSubs })},
+	{"NOTIFY_COMMANDS_PER_MINUTE", intVal(func(c *Config) *int { return &c.NotifyBot.CommandsPerMinute })},
 	{"NOTIFY_MIN_AMOUNT", str(func(c *Config) *string { return &c.NotifyBot.MinAmount })},
 	{"SINK_POSTGRES_ENABLED", boolean(func(c *Config) *bool { return &c.Sinks.Postgres.Enabled })},
 	{"DATABASE_URL", str(func(c *Config) *string { return &c.Sinks.Postgres.DSN })},

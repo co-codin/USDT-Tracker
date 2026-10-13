@@ -28,7 +28,19 @@ var (
 	ErrExists = errors.New("notify: already subscribed")
 	// ErrNotFound means the subscription does not exist.
 	ErrNotFound = errors.New("notify: not subscribed")
+	// ErrCapacity means the bot-wide user or subscription cap is reached.
+	ErrCapacity = errors.New("notify: bot capacity reached")
 )
+
+// Limits bound one AddSub call.
+type Limits struct {
+	// PerPlan returns the max addresses for a plan.
+	PerPlan func(plan string) int
+	// MaxUsers caps the number of users with at least one /add (0 = no cap).
+	MaxUsers int
+	// MaxTotalSubs caps subscriptions across all users (0 = no cap).
+	MaxTotalSubs int
+}
 
 // Sub is one subscribed address.
 type Sub struct {
@@ -47,12 +59,12 @@ type User struct {
 
 // Store persists users and subscriptions.
 type Store interface {
-	// EnsureUser creates the user (plan free) if missing, clears the
-	// blocked flag and returns it.
-	EnsureUser(ctx context.Context, chatID int64, username string) (User, error)
-	// AddSub subscribes; limit(plan) gives the max addresses for the user's
-	// plan. Returns ErrLimit / ErrExists.
-	AddSub(ctx context.Context, chatID int64, chain, address string, limit func(plan string) int) error
+	// GetUser returns the user; ok=false when the chat never used /add
+	// (read-only: commands other than /add never create rows).
+	GetUser(ctx context.Context, chatID int64) (u User, ok bool, err error)
+	// AddSub creates the user if needed (plan free, unblocked) and
+	// subscribes. Returns ErrLimit / ErrExists / ErrCapacity.
+	AddSub(ctx context.Context, chatID int64, username, chain, address string, lim Limits) error
 	ListSubs(ctx context.Context, chatID int64) ([]Sub, error)
 	RemoveSub(ctx context.Context, chatID int64, chain, address string) error
 	// ActiveSubs returns every subscription of users that have not blocked the bot.
@@ -82,28 +94,29 @@ func (m *MemoryStore) SetPlan(chatID int64, plan string) {
 	}
 }
 
-// EnsureUser implements Store.
-func (m *MemoryStore) EnsureUser(_ context.Context, chatID int64, _ string) (User, error) {
+// GetUser implements Store.
+func (m *MemoryStore) GetUser(_ context.Context, chatID int64) (User, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if u, ok := m.users[chatID]; ok {
+		return *u, true, nil
+	}
+	return User{ChatID: chatID, Plan: PlanFree}, false, nil
+}
+
+// AddSub implements Store.
+func (m *MemoryStore) AddSub(_ context.Context, chatID int64, _, chain, address string, lim Limits) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	u, ok := m.users[chatID]
 	if !ok {
+		if lim.MaxUsers > 0 && len(m.users) >= lim.MaxUsers {
+			return ErrCapacity
+		}
 		u = &User{ChatID: chatID, Plan: PlanFree}
 		m.users[chatID] = u
 	}
 	u.Blocked = false
-	return *u, nil
-}
-
-// AddSub implements Store.
-func (m *MemoryStore) AddSub(_ context.Context, chatID int64, chain, address string, limit func(string) int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	u, ok := m.users[chatID]
-	if !ok {
-		u = &User{ChatID: chatID, Plan: PlanFree}
-		m.users[chatID] = u
-	}
 	n := 0
 	for _, s := range m.subs {
 		if s.ChatID == chatID {
@@ -113,8 +126,11 @@ func (m *MemoryStore) AddSub(_ context.Context, chatID int64, chain, address str
 			n++
 		}
 	}
-	if n >= limit(u.Plan) {
+	if n >= lim.PerPlan(u.Plan) {
 		return ErrLimit
+	}
+	if lim.MaxTotalSubs > 0 && len(m.subs) >= lim.MaxTotalSubs {
+		return ErrCapacity
 	}
 	m.subs = append(m.subs, Sub{ChatID: chatID, Chain: chain, Address: address, CreatedAt: time.Now().UTC()})
 	return nil

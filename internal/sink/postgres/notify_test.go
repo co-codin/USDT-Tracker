@@ -22,15 +22,14 @@ func TestNotifyStoreIntegration(t *testing.T) {
 	}
 	defer s.Close()
 	n := s.Notify()
-	limit := func(plan string) int {
+	limit := notify.Limits{PerPlan: func(plan string) int {
 		if plan == notify.PlanPremium {
 			return 10
 		}
 		return 2
-	}
-	u, err := n.EnsureUser(ctx, 7, "alice")
-	if err != nil || u.Plan != notify.PlanFree {
-		t.Fatal(u, err)
+	}}
+	if _, ok, err := n.GetUser(ctx, 7); err != nil || ok {
+		t.Fatal("GetUser must not create users", ok, err)
 	}
 	// Concurrent adds must not exceed the plan limit.
 	var wg sync.WaitGroup
@@ -39,7 +38,7 @@ func TestNotifyStoreIntegration(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs[i] = n.AddSub(ctx, 7, "eth", "0x"+string(rune('a'+i))+"000000000000000000000000000000000000000", limit)
+			errs[i] = n.AddSub(ctx, 7, "alice", "eth", "0x"+string(rune('a'+i))+"000000000000000000000000000000000000000", limit)
 		}()
 	}
 	wg.Wait()
@@ -58,16 +57,16 @@ func TestNotifyStoreIntegration(t *testing.T) {
 		t.Fatalf("ok %d limit %d", ok, lim)
 	}
 	subs, _ := n.ListSubs(ctx, 7)
-	if err := n.AddSub(ctx, 7, subs[0].Chain, subs[0].Address, func(string) int { return 99 }); !errors.Is(err, notify.ErrExists) {
+	if err := n.AddSub(ctx, 7, "", subs[0].Chain, subs[0].Address, notify.Limits{PerPlan: func(string) int { return 99 }}); !errors.Is(err, notify.ErrExists) {
 		t.Fatal(err)
 	}
 	if err := n.SetPlan(ctx, 7, notify.PlanPremium); err != nil {
 		t.Fatal(err)
 	}
-	if err := n.AddSub(ctx, 7, "tron", "TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv", limit); err != nil {
+	if err := n.AddSub(ctx, 7, "", "tron", "TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv", limit); err != nil {
 		t.Fatal(err)
 	}
-	if err := n.AddSub(ctx, 8, "sol", "x", limit); err == nil {
+	if err := n.AddSub(ctx, 8, "", "sol", "x", limit); err == nil {
 		t.Fatal("unknown chain accepted by the check constraint")
 	}
 	act, _ := n.ActiveSubs(ctx)
@@ -78,8 +77,20 @@ func TestNotifyStoreIntegration(t *testing.T) {
 	if act, _ := n.ActiveSubs(ctx); len(act) != 0 {
 		t.Fatal("blocked user still active")
 	}
-	if u, _ := n.EnsureUser(ctx, 7, ""); u.Blocked || u.Plan != notify.PlanPremium {
+	if u, ok, _ := n.GetUser(ctx, 7); !ok || !u.Blocked || u.Plan != notify.PlanPremium {
 		t.Fatalf("%+v", u)
+	}
+	_ = n.SetBlocked(ctx, 7, false)
+	// Bot-wide caps.
+	capLim := notify.Limits{PerPlan: limit.PerPlan, MaxUsers: 2, MaxTotalSubs: 4}
+	if err := n.AddSub(ctx, 9, "", "tron", "TYGjwWR9qhmGuTbCdGvgoM5Yv7rZPeC2yx", capLim); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.AddSub(ctx, 10, "", "tron", "TYGjwWR9qhmGuTbCdGvgoM5Yv7rZPeC2yx", capLim); !errors.Is(err, notify.ErrCapacity) {
+		t.Fatalf("max users: %v", err)
+	}
+	if err := n.AddSub(ctx, 9, "", "tron", "TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv", capLim); !errors.Is(err, notify.ErrCapacity) {
+		t.Fatalf("max subs: %v", err)
 	}
 	if err := n.RemoveSub(ctx, 7, "tron", "TLaGjwhvA8XQYSxFAcAXy7Dvuue9eGYitv"); err != nil {
 		t.Fatal(err)

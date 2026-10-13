@@ -44,6 +44,13 @@ type Config struct {
 	RefreshInterval time.Duration // subscription cache refresh, default 5s
 	SendRPS         float64       // global message rate, default 25/s (Telegram: ~30/s)
 	QueueSize       int           // pending notifications, default 10000
+	// MaxUsers / MaxTotalSubs cap bot-wide users (chats that used /add) and
+	// subscriptions; /add is refused beyond them. 0 = unlimited.
+	MaxUsers     int
+	MaxTotalSubs int
+	// CommandsPerMinute is the per-chat command budget (burst 5); extra
+	// messages are dropped silently. Default 20.
+	CommandsPerMinute int
 }
 
 func (c *Config) defaults() {
@@ -71,6 +78,45 @@ func (c *Config) defaults() {
 	if c.QueueSize <= 0 {
 		c.QueueSize = 10000
 	}
+	if c.CommandsPerMinute <= 0 {
+		c.CommandsPerMinute = 20
+	}
+}
+
+// maxTrackedChats bounds the per-chat limiter table.
+const maxTrackedChats = 50_000
+
+type chatLimiter struct {
+	lim  *rate.Limiter
+	seen time.Time
+}
+
+// allow reports whether chatID may run another command now.
+func (b *Bot) allow(chatID int64) bool {
+	b.rlMu.Lock()
+	defer b.rlMu.Unlock()
+	now := time.Now()
+	cl, ok := b.chats[chatID]
+	if !ok {
+		if len(b.chats) >= maxTrackedChats {
+			for id, c := range b.chats { // evict idle chats (their buckets are full again)
+				if now.Sub(c.seen) > time.Minute {
+					delete(b.chats, id)
+				}
+			}
+			if len(b.chats) >= maxTrackedChats {
+				return false // flood of new chats: shed load
+			}
+		}
+		cl = &chatLimiter{lim: rate.NewLimiter(rate.Limit(float64(b.cfg.CommandsPerMinute)/60), 5)}
+		b.chats[chatID] = cl
+	}
+	cl.seen = now
+	return cl.lim.Allow()
+}
+
+func (b *Bot) limits() Limits {
+	return Limits{PerPlan: b.cfg.Limit, MaxUsers: b.cfg.MaxUsers, MaxTotalSubs: b.cfg.MaxTotalSubs}
 }
 
 // Limit returns the address limit of plan.
@@ -105,6 +151,9 @@ type Bot struct {
 	limiter *rate.Limiter
 	sent    atomic.Int64
 	dropped atomic.Int64
+	rlMu    sync.Mutex
+	chats   map[int64]*chatLimiter
+	limited atomic.Int64
 }
 
 // New creates a bot.
@@ -117,7 +166,8 @@ func New(cfg Config, store Store, api API, log *slog.Logger) (*Bot, error) {
 		log = slog.New(slog.DiscardHandler)
 	}
 	b := &Bot{cfg: cfg, store: store, api: api, log: log, dirty: make(chan struct{}, 1), wake: make(chan struct{}, 1),
-		seen: cursor.NewDedupe(200_000), minAmt: map[int]*big.Int{}, limiter: rate.NewLimiter(rate.Limit(cfg.SendRPS), 1)}
+		seen: cursor.NewDedupe(200_000), minAmt: map[int]*big.Int{}, limiter: rate.NewLimiter(rate.Limit(cfg.SendRPS), 1),
+		chats: map[int64]*chatLimiter{}}
 	empty := map[string][]int64{}
 	b.index.Store(&empty)
 	return b, nil
@@ -147,6 +197,9 @@ func (b *Bot) markDirty() {
 
 // Stats returns delivered and dropped notification counts.
 func (b *Bot) Stats() (sent, dropped int64) { return b.sent.Load(), b.dropped.Load() }
+
+// RateLimited returns how many commands were dropped by the per-chat limit.
+func (b *Bot) RateLimited() int64 { return b.limited.Load() }
 
 func (b *Bot) min(decimals int) *big.Int {
 	b.mu.Lock()
@@ -270,8 +323,18 @@ func (b *Bot) pollLoop(ctx context.Context) {
 		backoff = time.Second
 		for _, u := range ups {
 			if u.Message != nil && u.Message.Text != "" {
+				if !b.allow(u.Message.Chat.ID) {
+					b.limited.Add(1)
+					offset = u.UpdateID + 1
+					continue
+				}
 				reply := b.Handle(ctx, u.Message)
 				if reply != "" {
+					// Replies share the global send budget with notifications so
+					// command floods cannot push the bot into Telegram's 429s.
+					if err := b.limiter.Wait(ctx); err != nil {
+						return
+					}
 					if err := b.api.SendMessage(ctx, strconv.FormatInt(u.Message.Chat.ID, 10), reply, tgbot.SendOptions{HTML: true, DisablePreview: true}); err != nil {
 						b.log.Warn("notify: reply failed", "err", err)
 					}
@@ -313,14 +376,27 @@ func (b *Bot) Handle(ctx context.Context, m *tgbot.Message) string {
 	}
 	args := fields[1:]
 	chatID := m.Chat.ID
+	if m.Chat.Type != "" && m.Chat.Type != "private" {
+		// In groups any member could change the group's subscriptions:
+		// only private chats are served.
+		if cmd == "/start" || cmd == "/help" || cmd == "/add" {
+			return "🔒 Please message me in a private chat to manage your addresses."
+		}
+		return ""
+	}
 	username := ""
 	if m.From != nil {
 		username = m.From.Username
 	}
-	user, err := b.store.EnsureUser(ctx, chatID, username)
+	user, known, err := b.store.GetUser(ctx, chatID)
 	if err != nil {
-		b.log.Error("notify: ensure user", "err", err)
+		b.log.Error("notify: get user", "err", err)
 		return "⚠️ Temporary error, please try again later."
+	}
+	if known && user.Blocked { // they talk to us again: resume deliveries
+		if err := b.store.SetBlocked(ctx, chatID, false); err == nil {
+			b.markDirty()
+		}
 	}
 	switch cmd {
 	case "/start", "/help":
@@ -333,9 +409,11 @@ func (b *Bot) Handle(ctx context.Context, m *tgbot.Message) string {
 		if err != nil {
 			return "❌ " + html.EscapeString(err.Error())
 		}
-		switch err := b.store.AddSub(ctx, chatID, c, addr, b.cfg.Limit); {
+		switch err := b.store.AddSub(ctx, chatID, username, c, addr, b.limits()); {
 		case errors.Is(err, ErrExists):
 			return "ℹ️ Already watching this address."
+		case errors.Is(err, ErrCapacity):
+			return "⏳ This bot is at capacity right now and cannot accept new addresses. Please try again later."
 		case errors.Is(err, ErrLimit):
 			return fmt.Sprintf("🔒 Your %s plan allows %d addresses. Remove one with /remove, or upgrade to premium for up to %d.",
 				html.EscapeString(user.Plan), b.cfg.Limit(user.Plan), b.cfg.PremiumLimit)

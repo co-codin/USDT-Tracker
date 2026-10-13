@@ -133,9 +133,7 @@ func TestDispatchPollingAndBlocked(t *testing.T) {
 		subs, _ := st.ActiveSubs(context.Background())
 		return len(subs) == 3 && len(*b.index.Load()) == 2
 	})
-	if off, _ := st.LoadOffset(context.Background()); off != 4 {
-		t.Fatalf("offset %d", off)
-	}
+	waitFor(t, func() bool { off, _ := st.LoadOffset(context.Background()); return off == 4 })
 	srv.Forbid("300") // user 300 blocked the bot
 	b.Observe(ctx, chain.Block{Transfers: []model.Transfer{
 		usdt("tron", tronB, tronA, 15_000_000, 0), // in for 100 and 300
@@ -202,4 +200,69 @@ func TestFormatMemoEscaping(t *testing.T) {
 	if !strings.Contains(s, "self-transfer on TON") || !strings.Contains(s, "&lt;b&gt;x&lt;/b&gt;") {
 		t.Fatal(s)
 	}
+}
+
+func TestReadOnlyCommandsDoNotCreateUsers(t *testing.T) {
+	b, st, _ := newBot(t, Config{})
+	ctx := context.Background()
+	for _, c := range []string{"/start", "/help", "/list", "/plan", "/remove 1", "hello"} {
+		b.Handle(ctx, msg(55, c))
+	}
+	if _, ok, _ := st.GetUser(ctx, 55); ok {
+		t.Fatal("read-only commands created a user row")
+	}
+	b.Handle(ctx, msg(55, "/add "+tronA))
+	if _, ok, _ := st.GetUser(ctx, 55); !ok {
+		t.Fatal("/add did not create the user")
+	}
+}
+
+func TestGroupChatsAreRefused(t *testing.T) {
+	b, st, _ := newBot(t, Config{})
+	ctx := context.Background()
+	m := msg(-100123, "/add "+tronA)
+	m.Chat.Type = "supergroup"
+	if r := b.Handle(ctx, m); !strings.Contains(r, "private chat") {
+		t.Fatal(r)
+	}
+	m.Text = "/remove 1"
+	if r := b.Handle(ctx, m); r != "" {
+		t.Fatal(r)
+	}
+	if subs, _ := st.ActiveSubs(ctx); len(subs) != 0 {
+		t.Fatal("group subscription created")
+	}
+}
+
+func TestBotCapacity(t *testing.T) {
+	b, _, _ := newBot(t, Config{MaxUsers: 1, MaxTotalSubs: 2})
+	ctx := context.Background()
+	if r := b.Handle(ctx, msg(1, "/add "+tronA)); !strings.Contains(r, "Watching") {
+		t.Fatal(r)
+	}
+	if r := b.Handle(ctx, msg(2, "/add "+tronA)); !strings.Contains(r, "capacity") {
+		t.Fatal(r)
+	}
+	b.Handle(ctx, msg(1, "/add "+tronB))
+	if r := b.Handle(ctx, msg(1, "/add "+ethA)); !strings.Contains(r, "capacity") {
+		t.Fatal(r)
+	}
+}
+
+func TestPerChatRateLimit(t *testing.T) {
+	b, _, srv := newBot(t, Config{CommandsPerMinute: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = b.Run(ctx) }()
+	for range 12 {
+		srv.UserSays(77, "/help")
+	}
+	srv.UserSays(78, "/help")
+	waitFor(t, func() bool { return len(srv.SentTo("78")) == 1 && b.RateLimited() >= 7 })
+	if n := len(srv.SentTo("77")); n != 5 { // burst 5, then dropped
+		t.Fatalf("chat 77 got %d replies", n)
+	}
+	cancel()
+	<-done
 }

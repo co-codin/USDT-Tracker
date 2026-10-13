@@ -157,6 +157,7 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		a.NotifyBot, err = notify.New(notify.Config{
 			FreeLimit: nb.FreeLimit, PremiumLimit: nb.PremiumLimit, MinAmount: nb.MinAmount,
 			Chains: chains, PollTimeout: nb.PollTimeout.D(),
+			MaxUsers: nb.MaxUsers, MaxTotalSubs: nb.MaxTotalSubs, CommandsPerMinute: nb.CommandsPerMinute,
 		}, pg.Notify(), api, log.With("component", "notify_bot"))
 		if err != nil {
 			return nil, errors.Join(err, a.disp.Close())
