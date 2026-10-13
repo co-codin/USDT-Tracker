@@ -6,83 +6,84 @@ log:
   level: info          # debug | info | warn | error
   format: json         # json | text   (application logs go to stderr)
 
-# Chains to listen on: any of tron (default), ton, eth — e.g. [tron, ton, eth] (all run
-# concurrently with their own cursor; sinks, filter rules and the admin API are shared).
-chains: [tron]           # env CHAINS=tron,ton,eth
+# Chains: one block per chain under chains.<name>. A chain listed here runs unless
+# `enabled: false` (env CHAINS=tron,ton,eth overrides the selection). All chains run
+# concurrently with their own cursor; sinks, filter rules and the admin API are shared.
+# (The old `chains: [tron]` list + top-level tron:/ton:/eth: blocks still load, with a
+# deprecation warning.)
+chains:
+  tron:
+    api_url: https://api.trongrid.io   # any TRON full node HTTP API (TronGrid compatible)
+    api_key: ""                        # env TRON_PRO_API_KEY (optional, raises rate limits)
+    timeout: 15s
+    rps: 3                             # client-side request rate limit; keep low without an API key
+    max_retries: 8                     # per request, exponential backoff, honours 429 Retry-After
+    verify_tx_count: true   # env TRON_VERIFY_TX_COUNT; cross-check tx-info count per block (+1 request/block)
+    contract: TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t   # USDT (TRC-20) on TRON mainnet
+    symbol: USDT
+    decimals: 6
+    confirmations: 20      # stay N blocks behind head (~60s); 19+ ≈ solidified/irreversible
+    poll_interval: 3s      # TRON produces a block every ~3s
+    start_block: 0         # used only when no cursor exists: 0 = safe head, N = exact block, -N = N blocks back
+    batch_size: 20         # max blocks per iteration
+    concurrency: 2         # parallel block fetches (blocks are still delivered in order)
+    # TRON addresses to watch (env FILTER_WATCH_ADDRESSES); filter.* rules apply.
+    watch_addresses: []
+    cursor_file: ./data/cursor.json   # ignored when the postgres sink is enabled (cursor stored in DB)
 
-tron:
-  api_url: https://api.trongrid.io   # any TRON full node HTTP API (TronGrid compatible)
-  api_key: ""                        # env TRON_PRO_API_KEY (optional, raises rate limits)
-  timeout: 15s
-  rps: 3                             # client-side request rate limit; keep low without an API key
-  max_retries: 8                     # per request, exponential backoff, honours 429 Retry-After
-  verify_tx_count: true   # env TRON_VERIFY_TX_COUNT; cross-check tx-info count per block (+1 request/block)
+  # TON: read-only, via the public toncenter v3 index API. Block numbers on TON
+  # are masterchain seqnos (~2.4 blocks/s).
+  ton:
+    enabled: false
+    api_url: https://toncenter.com/api/v3
+    api_key: ""                # env TONCENTER_API_KEY. Without a key toncenter allows ~1 req/s, too slow
+                               # for mainnet head (2 requests per masterchain block). Free key: @tonapibot
+    timeout: 15s
+    rps: 1                     # raise to ~9 with a free key (10 rps plan)
+    max_retries: 8
+    jetton_master: EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs   # official USD₮ on TON
+    symbol: USDT
+    decimals: 6
+    # TON addresses to watch (raw 0:<hex> or user-friendly EQ…/UQ…); filter.direction,
+    # filter.min_amount and filter.mode apply. Runtime TON addresses come from /v1/addresses.
+    watch_addresses: []
+    confirmations: 3           # masterchain blocks are final once indexed; small margin for indexer lag
+    poll_interval: 1s
+    start_block: 0             # same semantics as tron start_block, in masterchain seqnos
+    batch_size: 20
+    concurrency: 2
+    cursor_file: ./data/cursor-ton.json   # with postgres the cursor is "<cursor_name>:ton" in listener_cursor
 
-token:
-  contract: TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t   # USDT (TRC-20) on TRON mainnet
-  symbol: USDT
-  decimals: 6
+  # Ethereum: read-only ERC-20 USDT via standard JSON-RPC (eth_blockNumber +
+  # eth_getLogs over block ranges). ~12 s blocks.
+  eth:
+    enabled: false
+    rpc_url: https://ethereum-rpc.publicnode.com   # env ETH_RPC_URL. Provider URLs (Infura/Alchemy/…) embed
+                               # an API key: set it via env, it is never logged (only scheme://host).
+    timeout: 20s
+    rps: 5
+    max_retries: 8
+    contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7"   # Tether USD (USDT), 6 decimals
+    symbol: USDT
+    decimals: 6
+    # Ethereum addresses to watch (0x…, lowercase or EIP-55 checksummed); filter.* rules apply.
+    watch_addresses: []
+    confirmations: 12          # reorg safety margin (blocks)
+    poll_interval: 6s
+    start_block: 0
+    batch_size: 50             # blocks processed per iteration
+    log_chunk: 50              # max blocks per eth_getLogs call; halved automatically if the node refuses
+    head_tag: latest      # latest (minus confirmations) | safe | finalized
+    cursor_file: ./data/cursor-eth.json   # with postgres the cursor is "<cursor_name>:eth"
 
+# Shared listener settings (all chains).
 listener:
-  confirmations: 20      # stay N blocks behind head (~60s); 19+ ≈ solidified/irreversible
-  poll_interval: 3s      # TRON produces a block every ~3s
-  start_block: 0         # used only when no cursor exists: 0 = safe head, N = exact block, -N = N blocks back
-  batch_size: 20         # max blocks per iteration
-  concurrency: 2         # parallel block fetches (blocks are still delivered in order)
   dedupe_cache_size: 100000
   dispatch_timeout: 30s  # per delivery attempt; an in-flight block is finished on shutdown
 
-cursor:
-  file: ./data/cursor.json   # TRON cursor; ignored when the postgres sink is enabled (cursor stored in DB)
-
-# TON (used when chains contains ton). Read-only, via the public toncenter v3
-# index API. Block numbers on TON are masterchain seqnos (~2.4 blocks/s).
-ton:
-  api_url: https://toncenter.com/api/v3
-  api_key: ""                # env TONCENTER_API_KEY. Without a key toncenter allows ~1 req/s, too slow
-                             # for mainnet head (2 requests per masterchain block). Free key: @tonapibot
-  timeout: 15s
-  rps: 1                     # raise to ~9 with a free key (10 rps plan)
-  max_retries: 8
-  jetton_master: EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs   # official USD₮ on TON
-  symbol: USDT
-  decimals: 6
-  # TON addresses to watch (raw 0:<hex> or user-friendly EQ…/UQ…); filter.direction,
-  # filter.min_amount and filter.mode apply. Runtime TON addresses come from /v1/addresses.
-  watch_addresses: []
-  confirmations: 3           # masterchain blocks are final once indexed; small margin for indexer lag
-  poll_interval: 1s
-  start_block: 0             # same semantics as listener.start_block, in masterchain seqnos
-  batch_size: 20
-  concurrency: 2
-  cursor_file: ./data/cursor-ton.json   # with postgres the cursor is "<cursor_name>:ton" in listener_cursor
-
-# Ethereum (used when chains contains eth). Read-only ERC-20 USDT via standard
-# JSON-RPC (eth_blockNumber + eth_getLogs over block ranges). ~12 s blocks.
-eth:
-  rpc_url: https://ethereum-rpc.publicnode.com   # env ETH_RPC_URL. Provider URLs (Infura/Alchemy/…) embed
-                             # an API key: set it via env, it is never logged (only scheme://host).
-  timeout: 20s
-  rps: 5
-  max_retries: 8
-  contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7"   # Tether USD (USDT), 6 decimals
-  symbol: USDT
-  decimals: 6
-  # Ethereum addresses to watch (0x…, lowercase or EIP-55 checksummed); filter.* rules apply.
-  watch_addresses: []
-  confirmations: 12          # reorg safety margin (blocks)
-  poll_interval: 6s
-  start_block: 0             # same semantics as listener.start_block
-  batch_size: 50             # blocks processed per iteration
-  log_chunk: 50              # max blocks per eth_getLogs call; halved automatically if the node refuses
-  head_tag: latest      # latest (minus confirmations) | safe | finalized
-  cursor_file: ./data/cursor-eth.json   # with postgres the cursor is "<cursor_name>:eth"
-
 filter:
   # Leave watch_addresses empty and min_amount "0" to emit every transfer (firehose).
-  # These are TRON addresses; TON addresses go to ton.watch_addresses.
-  watch_addresses: []
-  #  - TXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+  # TRON watch addresses live in chains.tron.watch_addresses (this key is an alias).
   direction: both        # both | incoming | outgoing (relative to watched addresses)
   min_amount: "0"        # large-transfer threshold in USDT, e.g. "100000"
   mode: any              # any = watched OR large, all = watched AND large

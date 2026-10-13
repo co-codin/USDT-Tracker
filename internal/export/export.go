@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -271,8 +272,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	n, err := Write(r.Context(), w, h.src, q, Options{BOM: bom, Flush: flush})
 	if err != nil {
 		// Headers are already sent: the truncated body is the signal; log it.
+		if clientGone(r, err) {
+			h.log.Info("csv export aborted by client", "chain", q.Chain, "rows", n, "err", err)
+			return
+		}
 		h.log.Error("csv export failed", "chain", q.Chain, "rows", n, "err", err)
 		return
 	}
 	h.log.Info("csv export", "chain", q.Chain, "rows", n)
+}
+
+// clientGone reports whether err only means the HTTP client went away
+// (closed connection or cancelled request), which is not a server failure.
+func clientGone(r *http.Request, err error) bool {
+	return r.Context().Err() != nil || errors.Is(err, context.Canceled) ||
+		errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
 }

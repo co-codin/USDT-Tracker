@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/csv"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -193,5 +195,20 @@ func TestHandlerJSONErrorsAndBOM(t *testing.T) {
 	}
 	if w := get("address=" + ethA); strings.HasPrefix(w.Body.String(), BOM) {
 		t.Fatal("BOM without bom=1")
+	}
+}
+
+func TestClientGone(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	if !clientGone(r, fmt.Errorf("write: %w", syscall.EPIPE)) || !clientGone(r, syscall.ECONNRESET) {
+		t.Fatal("broken pipe / reset should count as client gone")
+	}
+	if clientGone(r, errors.New("db down")) {
+		t.Fatal("db error is a real failure")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !clientGone(r.WithContext(ctx), errors.New("x")) {
+		t.Fatal("cancelled request")
 	}
 }

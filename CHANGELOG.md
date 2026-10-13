@@ -31,6 +31,9 @@ All notable changes are documented here. The format follows
 - Concurrent migrations could deadlock (`pg_advisory_lock` + `CREATE INDEX CONCURRENTLY`); the
   migrator now polls `pg_try_advisory_lock`.
 - Notify-bot messages could be lost on a crash (were at-most-once).
+- `config.example.yaml` (also the Docker image's default config) now uses the `chains.<name>` shape,
+  so the image no longer logs deprecation warnings at startup.
+- A client closing the connection during a CSV export is logged at info, not as an error.
 
 ## [0.2.0] - 2026-10-13
 
