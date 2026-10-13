@@ -6,6 +6,32 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `chains:` as a mapping of per-chain blocks (`chains.tron`, `chains.ton`, `chains.eth`, with
+  `enabled`); the old list + top-level blocks keep working with a deprecation warning. Chains are
+  registered in one registry used by config validation and wiring.
+- `DATABASE_PASSWORD` / `sinks.postgres.password`; Helm `externalDatabase.passwordSecret.{name,key}`,
+  bundled Postgres password injected from the subchart Secret (no longer embedded in the URL).
+- Optional Helm PodDisruptionBudget (`podDisruptionBudget.enabled`).
+- Postgres outbox (`deliveries` table, migration 0007) for notify-bot messages and large-transfer
+  alerts: at-least-once with per-(chat, transfer) dedupe, 30-day retention.
+- Real end-to-end suite `test/e2e` (`make e2e`, CI job), `make helm-e2e` (kubeconform) and
+  `make smoke` (live read-only mainnet check).
+
+### Changed
+
+- All HTTP clients (TRON, TON, Ethereum, Telegram, webhook) share one retry / rate-limit / Retry-After
+  implementation (`internal/httpx`). TronGrid 403 frequency bans without a `Retry-After` header wait 30 s.
+- Listener taps (notify bot, alerts) run after sinks and before the cursor is saved, and are retried.
+- `make test-integration` runs every package against Postgres.
+
+### Fixed
+
+- Concurrent migrations could deadlock (`pg_advisory_lock` + `CREATE INDEX CONCURRENTLY`); the
+  migrator now polls `pg_try_advisory_lock`.
+- Notify-bot messages could be lost on a crash (were at-most-once).
+
 ## [0.2.0] - 2026-10-13
 
 ### ⚠ Breaking changes

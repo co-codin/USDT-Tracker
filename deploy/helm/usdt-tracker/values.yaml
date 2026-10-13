@@ -235,6 +235,13 @@ persistence:
 
 terminationGracePeriodSeconds: 40   # finish the in-flight block on SIGTERM
 
+# Optional PodDisruptionBudget. The listener is a single writer, so
+# maxUnavailable: 0 would block `kubectl drain`; keep 1 unless you really
+# want to pin the pod (missed blocks are caught up from the cursor anyway).
+podDisruptionBudget:
+  enabled: false
+  maxUnavailable: 1
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

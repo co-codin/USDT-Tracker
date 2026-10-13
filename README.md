@@ -253,7 +253,14 @@ helm upgrade --install usdt deploy/helm/usdt-tracker -n usdt \
   --set postgresql.enabled=false \
   --set externalDatabase.existingSecret=usdt-db --set externalDatabase.existingSecretKey=DATABASE_URL
 # or: --set postgresql.enabled=false --set externalDatabase.url='postgres://user:pass@db:5432/tron?sslmode=require'
+# or keep the URL password-less and take only the password from a Secret (sets DATABASE_PASSWORD):
+#   --set postgresql.enabled=false --set externalDatabase.url='postgres://user@db:5432/tron?sslmode=require' \
+#   --set externalDatabase.passwordSecret.name=usdt-db --set externalDatabase.passwordSecret.key=password
 ```
+
+With the bundled database the password is read from the subchart's Secret into `DATABASE_PASSWORD`
+and never appears in the pod's `DATABASE_URL`. An optional PodDisruptionBudget is available
+(`podDisruptionBudget.enabled=true`, `maxUnavailable: 1` by default).
 
 Non-secret settings (filters, sinks, confirmations…) go under `config:` in values (same schema as
 `config.example.yaml`, rendered into a ConfigMap). Notes: free Bitnami PostgreSQL images are only
@@ -266,6 +273,20 @@ better, use Postgres) and the admin API answers `503`.
 Configuration is read from `config.yaml` (or `-config path` / `CONFIG_FILE`) and then overridden by
 environment variables. Empty env values are ignored. Unknown YAML keys are rejected (typo-safe).
 See [`config.example.yaml`](config.example.yaml) for every option with comments.
+
+**Per-chain blocks (`chains:` mapping).** Since the Unreleased version each chain can be configured
+under `chains.<name>`; a chain listed there is enabled unless `enabled: false`:
+
+```yaml
+chains:
+  tron: {api_url: https://api.trongrid.io, rps: 3, confirmations: 20, watch_addresses: [T…], cursor_file: ./data/cursor.json}
+  ton:  {api_key: "", rps: 1, confirmations: 3}
+  eth:  {enabled: false, rpc_url: https://ethereum-rpc.publicnode.com}
+```
+
+The old shape (`chains: [tron, ton]` plus top-level `tron:` / `listener:` / `token:` / `ton:` / `eth:`
+blocks) still works and is equivalent, but logs a deprecation warning; mixing both shapes is an error.
+Env var names are unchanged.
 
 | YAML key | Env var | Default | Description |
 |---|---|---|---|
@@ -302,6 +323,12 @@ See [`config.example.yaml`](config.example.yaml) for every option with comments.
 | `sinks.telegram.min_amount` | `TELEGRAM_MIN_AMOUNT` | – | Extra alert threshold (watched-address hits always alert) |
 | `sinks.postgres.enabled` | `SINK_POSTGRES_ENABLED` | `false` | Also switches the cursor to Postgres |
 | `sinks.postgres.dsn` | `DATABASE_URL` | – | `postgres://user:pass@host:5432/db` |
+| `sinks.postgres.password` | `DATABASE_PASSWORD` | – | Overrides the password in the DSN (URL or `key=value` form), so the DSN itself can live in a ConfigMap |
+| `alerts.large_transfers.enabled` | `LARGE_ALERTS_ENABLED` | `false` | Whale-alert channel (see below) |
+| `alerts.large_transfers.bot_token` / `.chat_id` | `LARGE_ALERTS_BOT_TOKEN` / `LARGE_ALERTS_CHAT_ID` | `TELEGRAM_BOT_TOKEN` / – | |
+| `alerts.large_transfers.threshold` | `LARGE_ALERTS_THRESHOLD` | `100000` | Token units |
+| `notify_bot.enabled` | `NOTIFY_BOT_ENABLED` | `false` | Self-service notify bot (needs Postgres) |
+| `notify_bot.bot_token` | `TELEGRAM_NOTIFY_BOT_TOKEN` | – | Separate bot from the alert bot |
 | `log.level` / `log.format` | `LOG_LEVEL` / `LOG_FORMAT` | `info` / `json` | `text` for humans |
 | `chains` | `CHAINS` | `tron` | `tron`, `ton` or `tron,ton` |
 | `ton.api_url` | `TON_API_URL` | `https://toncenter.com/api/v3` | toncenter v3 (TON Index) compatible API |
@@ -773,12 +800,26 @@ make test-integration TEST_DATABASE_URL='postgres://postgres:test@localhost:5543
   page sizes 1/2/1000), and e2e runs: TON only with faults and restart, TRON + TON concurrently with
   separate cursors, `-chain ton` backfill, and Postgres with a TON address added via the API.
 
+- **Real end-to-end suite** (`test/e2e`, build tag `e2e`, `make e2e TEST_DATABASE_URL=…`, also run in
+  CI): builds and runs the actual `usdt-tracker` binary against scripted mock TRON / TON / Ethereum
+  nodes (429, 5xx, TronGrid 403 bans, lagging nodes, ETH reorg, a TON block with thousands of
+  transfers over many pages), real Postgres, an HMAC-verifying webhook receiver, mock Telegram
+  servers (alerts channel; notify bot `/start` `/add` `/list` `/remove`, languages, plan and rate
+  limits), the admin API (auth, add/remove, pagination) and CSV export over HTTP, and a SIGKILL
+  mid-stream followed by a restart (no gaps, no duplicates in Postgres).
+- `make helm-e2e`: `helm template` for several value sets validated with `kubeconform`.
+- `make smoke` (`SECS=60`): read-only live run against public mainnet for TRON, Ethereum and TON
+  (keyless works; keys only from env, never committed).
+
 ## Design notes & limitations
 
 - **Run one replica per cursor.** Two instances sharing a cursor would deliver everything twice; the
   Helm chart uses `replicas: 1` with a `Recreate` strategy, so do not add an HPA, and a
-  PodDisruptionBudget only makes sense as `maxUnavailable: 1`. Notify-bot messages are at-most-once
-  on a crash (queued but unsent messages are lost); webhooks / Postgres / Telegram alerts are at-least-once.
+  PodDisruptionBudget only makes sense as `maxUnavailable: 1` (`podDisruptionBudget.enabled`).
+  Notify-bot messages and large-transfer alerts are queued in a Postgres outbox (`deliveries` table)
+  *before* the cursor advances, so they are at-least-once across crashes and restarts, deduplicated
+  per (chat, transfer); the only duplicate window is a crash between Telegram accepting a message
+  and the row being marked sent. Without Postgres the alert queue is in memory (lost on restart).
 
 - **Delivery semantics** are at-least-once. A crash *between* delivering a block and persisting the
   cursor replays that block on restart; use `id` (`tx_id:log_index`) / `X-Webhook-Delivery` for
