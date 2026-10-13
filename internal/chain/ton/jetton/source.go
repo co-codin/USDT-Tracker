@@ -37,8 +37,8 @@ type Token struct {
 	Decimals int
 }
 
-// maxPages bounds pagination per masterchain block (1000 × 50 transfers).
-const maxPages = 50
+// warnPages logs a warning every this many pages of one masterchain block.
+const warnPages = 100
 
 var _ chain.Source = (*Source)(nil)
 
@@ -128,12 +128,17 @@ func (s *Source) Block(ctx context.Context, num int64) (chain.Block, error) {
 	if len(ranges) == 0 {
 		return out, nil
 	}
+	// Page by logical time (sort=asc): the next page starts at the last lt
+	// seen (inclusive, duplicates are dropped via seen). Offsets are only
+	// used while a whole page shares one lt, so there is no page cap and no
+	// O(n²) deep offsets: a huge block (airdrop) is slow, never stuck.
 	seen := map[string]bool{}
-	for page := 0; ; page++ {
-		if page >= maxPages {
-			return chain.Block{}, fmt.Errorf("ton: masterchain %d: more than %d jetton transfer pages", num, maxPages)
+	start, offset := lo, 0
+	for page := 1; ; page++ {
+		if page%warnPages == 0 {
+			s.log.Warn("very large ton block, still paging jetton transfers", "block", num, "pages", page, "lt", start)
 		}
-		items, err := s.api.JettonTransfers(ctx, s.master, lo, hi, s.pageSize, page*s.pageSize)
+		items, err := s.api.JettonTransfers(ctx, s.master, start, hi, s.pageSize, offset)
 		if err != nil {
 			return chain.Block{}, err
 		}
@@ -154,6 +159,15 @@ func (s *Source) Block(ctx context.Context, num int64) (chain.Block, error) {
 		}
 		if len(items) < s.pageSize {
 			break
+		}
+		last := uint64(items[len(items)-1].TransactionLt)
+		switch {
+		case last > start:
+			start, offset = last, 0
+		case last == start:
+			offset += s.pageSize
+		default:
+			return chain.Block{}, fmt.Errorf("%w: jetton transfers not sorted by lt (got %d after %d)", chain.ErrInconsistent, last, start)
 		}
 	}
 	sort.SliceStable(out.Transfers, func(i, j int) bool { return out.Transfers[i].TxID < out.Transfers[j].TxID })

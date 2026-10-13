@@ -144,6 +144,21 @@ func genItems(n int64) []item {
 	return out
 }
 
+// AddBurst adds k extra USD₮ transfers to masterchain block n (shard A),
+// `perLt` of them sharing each logical time, e.g. an airdrop.
+func (s *Server) AddBurst(n int64, k, perLt int) {
+	aLo, _, _, _ := ranges(n)
+	if perLt < 1 {
+		perLt = 1
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := 0; i < k; i++ {
+		s.items = append(s.items, item{mc: n, master: USDTMasterRaw, wallet: walletA, from: Alice, to: Bob,
+			amount: strconv.Itoa(i + 1), lt: aLo + 100 + uint64(i/perLt), hash: hashOf(n, 1000+i)}) //nolint:gosec // test data
+	}
+}
+
 // Expected returns the USD₮ transfers in masterchain blocks [from, to].
 func (s *Server) Expected(from, to int64) []Expected {
 	var out []Expected

@@ -206,3 +206,28 @@ func (s *stubAPI) MasterchainBlockShards(context.Context, int64) ([]ton.BlockRef
 func (s *stubAPI) JettonTransfers(context.Context, string, uint64, uint64, int, int) ([]ton.JettonTransfer, error) {
 	return s.items, nil
 }
+
+// A block with more transfers than the old 50-page cap must be read fully
+// (it used to stall the chain forever), including runs of transfers that
+// share one logical time.
+func TestSourceHugeBlockNoPageCap(t *testing.T) {
+	srv := tontest.New(120)
+	defer srv.Close()
+	srv.AddBurst(30, 157, 3)
+	src := newSrc(t, srv, 2, nil)
+	b, err := src.Block(context.Background(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := len(srv.Expected(30, 30))
+	if len(b.Transfers) != want || want < 157 {
+		t.Fatalf("got %d transfers, want %d", len(b.Transfers), want)
+	}
+	seen := map[string]bool{}
+	for _, tr := range b.Transfers {
+		if seen[tr.Key()] {
+			t.Fatalf("duplicate %s", tr.Key())
+		}
+		seen[tr.Key()] = true
+	}
+}
