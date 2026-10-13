@@ -671,6 +671,12 @@ watch_addresses(address TEXT PRIMARY KEY  -- base58 T… or TON raw 0:<hex>, lab
 -- migration 0004: watch_addresses accepts chain 'eth' with lowercase 0x<40 hex>
 ```
 
+**Upgrades / migrations.** Migrations run automatically at start-up under an advisory lock (one
+instance at a time) and are idempotent. Index builds on the large `trc20_transfers` table use
+`CREATE INDEX CONCURRENTLY` (no write lock; an interrupted build is dropped and rebuilt on the next
+start), but they can still take minutes on a big table – the pod only becomes ready afterwards; the
+Helm `startupProbe` allows 10 minutes. Other migrations take short locks only.
+
 The table keeps its historical name `trc20_transfers` for compatibility; filter TON rows with
 `WHERE chain = 'ton'`. The TRON cursor row is `<cursor_name>` (unchanged), the TON one `<cursor_name>:ton`, the Ethereum one `<cursor_name>:eth`
 (Ethereum rows: `chain = 'eth'`, `tx_id` = `0x…` hash, lowercase addresses).

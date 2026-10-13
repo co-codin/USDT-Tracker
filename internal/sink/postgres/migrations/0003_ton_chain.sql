@@ -3,7 +3,7 @@
 -- historical name trc20_transfers; TON rows have chain = 'ton'.
 ALTER TABLE trc20_transfers ADD COLUMN IF NOT EXISTS chain TEXT NOT NULL DEFAULT 'tron';
 ALTER TABLE trc20_transfers ADD COLUMN IF NOT EXISTS memo  TEXT;
-CREATE INDEX IF NOT EXISTS trc20_transfers_chain_block_idx ON trc20_transfers (chain, block_number);
+-- trc20_transfers_chain_block_idx is built CONCURRENTLY in 0005 (no write lock).
 
 -- Watch list: TON addresses are stored in canonical raw form ("0:<64 hex>").
 ALTER TABLE watch_addresses ADD COLUMN IF NOT EXISTS chain TEXT NOT NULL DEFAULT 'tron';

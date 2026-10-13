@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -103,18 +104,73 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, string(sqlText)); err != nil {
+		if strings.HasPrefix(string(sqlText), noTxMarker) {
+			err = applyNoTx(ctx, conn, string(sqlText), version)
+		} else {
+			err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(ctx, string(sqlText)); err != nil {
+					return err
+				}
+				_, err := tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES ($1)`, version)
 				return err
-			}
-			_, err := tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES ($1)`, version)
-			return err
-		})
+			})
+		}
 		if err != nil {
 			return fmt.Errorf("postgres: apply migration %s: %w", version, err)
 		}
 	}
 	return nil
+}
+
+// noTxMarker on the first line of a migration runs its statements one by one
+// outside a transaction (needed for CREATE INDEX CONCURRENTLY). Every
+// statement must be idempotent (IF NOT EXISTS) because a crash can leave the
+// migration half applied.
+const noTxMarker = "-- migrate:no-transaction"
+
+var indexNameRE = regexp.MustCompile(`(?i)CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+(\w+)`)
+
+func applyNoTx(ctx context.Context, conn *pgxpool.Conn, sqlText, version string) error {
+	// An interrupted CONCURRENTLY build leaves an INVALID index that
+	// IF NOT EXISTS would silently keep: drop those first.
+	for _, m := range indexNameRE.FindAllStringSubmatch(sqlText, -1) {
+		var invalid bool
+		err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+			WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace AND NOT i.indisvalid)`, m[1]).Scan(&invalid)
+		if err != nil {
+			return err
+		}
+		if invalid {
+			if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+pgx.Identifier{m[1]}.Sanitize()); err != nil {
+				return err
+			}
+		}
+	}
+	for _, stmt := range splitStatements(sqlText) {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	_, err := conn.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES ($1)`, version)
+	return err
+}
+
+// splitStatements splits a simple migration file on ';' at line ends,
+// dropping comment-only chunks (no dollar quoting in no-tx migrations).
+func splitStatements(sqlText string) []string {
+	var out []string
+	for _, chunk := range strings.Split(sqlText, ";\n") {
+		var lines []string
+		for _, l := range strings.Split(chunk, "\n") {
+			if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "--") {
+				lines = append(lines, l)
+			}
+		}
+		if st := strings.TrimSuffix(strings.TrimSpace(strings.Join(lines, "\n")), ";"); st != "" {
+			out = append(out, st)
+		}
+	}
+	return out
 }
 
 // Name implements sink.Sink.
