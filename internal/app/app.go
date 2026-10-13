@@ -220,6 +220,9 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 	for _, p := range a.Pipelines {
 		cursors = append(cursors, p.Chain+"="+p.cursor)
 	}
+	for _, d := range cfg.Deprecated {
+		log.Warn("deprecated config", "notice", d)
+	}
 	log.Info("usdt-tracker configured",
 		"version", opts.Version,
 		"chains", strings.Join(chains, ","),

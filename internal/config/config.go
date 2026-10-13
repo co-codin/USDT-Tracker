@@ -59,6 +59,10 @@ type Config struct {
 	Alerts   Alerts   `yaml:"alerts"`
 	// NotifyBot is the self-service Telegram bot (/add your address, get a DM per transfer).
 	NotifyBot NotifyBot `yaml:"notify_bot"`
+
+	// Deprecated lists notices about deprecated config keys found by Load
+	// (logged at startup).
+	Deprecated []string `yaml:"-"`
 }
 
 // MinAPITokenLen is the minimum accepted admin API token length.
@@ -332,10 +336,19 @@ func Load(path string, lookup func(string) (string, bool)) (Config, error) {
 		if err != nil {
 			return cfg, fmt.Errorf("config: %w", err)
 		}
-		dec := yaml.NewDecoder(strings.NewReader(string(b)))
-		dec.KnownFields(true)
-		if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+		var root yaml.Node
+		if err := yaml.Unmarshal(b, &root); err != nil {
 			return cfg, fmt.Errorf("config: parse %s: %w", path, err)
+		}
+		if len(root.Content) > 0 {
+			notes, err := applyChainsNode(&cfg, &root)
+			if err != nil {
+				return cfg, fmt.Errorf("config: parse %s: %w", path, err)
+			}
+			cfg.Deprecated = notes
+			if err := strictDecode(&root, &cfg); err != nil && !errors.Is(err, io.EOF) {
+				return cfg, fmt.Errorf("config: parse %s: %w", path, err)
+			}
 		}
 	}
 	if lookup == nil {
@@ -364,19 +377,16 @@ func (c *Config) Validate() error {
 	}
 	seenChain := map[string]bool{}
 	for _, ch := range c.Chains {
-		if ch != model.ChainTron && ch != model.ChainTON && ch != model.ChainETH {
-			add("chains: unknown chain %q (want tron|ton|eth)", ch)
+		spec, ok := chainSpec(ch)
+		if !ok {
+			add("chains: unknown chain %q (want %s)", ch, strings.Join(KnownChains(), "|"))
+		} else if spec.Validate != nil && !seenChain[ch] {
+			spec.Validate(c, add)
 		}
 		if seenChain[ch] {
 			add("chains: %q listed twice", ch)
 		}
 		seenChain[ch] = true
-	}
-	if c.HasChain(model.ChainTON) {
-		c.validateTON(add)
-	}
-	if c.HasChain(model.ChainETH) {
-		c.validateETH(add)
 	}
 	if _, err := tron.ParseAddress(c.Token.Contract); err != nil {
 		add("token.contract: %v", err)
