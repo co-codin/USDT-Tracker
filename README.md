@@ -16,6 +16,9 @@ on Ethereum, filters them (watch list, large-transfer threshold) and fans them o
 Typical uses: deposit detection for a payment flow, treasury / whale alerts, feeding an analytics
 pipeline, compliance monitoring of a set of addresses.
 
+> ℹ️ **Naming:** the project is called **USDT-Tracker**; the Go module, repository folder and binary
+> keep the historical name `tron-usdt-listener` (it started as a TRON-only listener).
+
 > 🔒 **Read-only by design.** The listener only calls public query endpoints. It never asks for,
 > stores or handles private keys and has no code path that signs or broadcasts transactions.
 
@@ -25,13 +28,16 @@ pipeline, compliance monitoring of a set of addresses.
 
 - **Block-range processing with a persisted cursor** – resumes exactly where it stopped, no gaps
   (file cursor by default, PostgreSQL when the Postgres sink is enabled).
-- **Confirmations** – stays `N` blocks behind head (default 20 ≈ 60 s, i.e. solidified/irreversible on TRON).
+- **Confirmations per chain** – each chain stays `N` blocks behind its head: TRON 20 (≈ 60 s, solidified),
+  TON 3 masterchain blocks (indexer lag margin; TON blocks are final), Ethereum 12
+  (`LISTENER_CONFIRMATIONS`, `TON_CONFIRMATIONS`, `ETH_CONFIRMATIONS`).
 - **At-least-once delivery, deduplicated** – the cursor only advances after every required sink
   accepted a block; per-sink dedupe by `tx_id + log_index` so a retried block never double-sends to
   sinks that already succeeded. Postgres has a unique key; webhooks carry stable idempotency ids.
-- **Resilient TRON client** – client-side rate limiting, retries with exponential backoff + jitter,
-  honours `429` / `Retry-After` and TronGrid's 403 "frequency limit" responses, verifies ambiguous
-  empty responses (lagging nodes) instead of silently skipping blocks.
+- **Resilient read-only clients for every chain** – client-side rate limiting, retries with exponential
+  backoff + jitter, honours `429` / `Retry-After`. TRON (TronGrid HTTP) also handles the 403 "frequency limit"
+  and verifies ambiguous empty blocks; TON (toncenter v3) retries blocks the indexer does not have yet;
+  Ethereum (JSON-RPC `eth_getLogs`) halves the log range when a node rejects it.
 - **Filters** – watch list (incoming / outgoing / both), minimum amount for large-transfer alerts,
   `any` (watched OR large) / `all` (watched AND large) modes, or firehose mode (everything).
 - **Runtime watch list + admin API** – add/remove deposit addresses over HTTP
@@ -44,6 +50,12 @@ pipeline, compliance monitoring of a set of addresses.
 - **TRON, TON and Ethereum, separately or together** – `chains: [tron]` (default), `[ton]`, `[eth]` or any combination such as `[tron, ton, eth]`.
   Each chain runs its own loop and cursor; sinks, filter rules, metrics (label `chain`) and the admin
   API are shared. See [TON](#ton-usd-jetton) and [Ethereum](#ethereum-erc-20-usdt).
+- **Large-transfer channel** – posts every transfer ≥ 100 000 USDT (configurable) on any enabled chain
+  to a Telegram channel, paced and batched. See [Large-transfer channel](#large-transfer-channel-whale-alerts).
+- **CSV / accounting export** – per-address statement via `/v1/export.csv` or the `export` subcommand.
+  See [CSV / accounting export](#csv--accounting-export).
+- **Telegram notify bot** – users `/add` their TRON / TON / Ethereum address and get a DM on every transfer;
+  free tier limit + `premium` plan hook. See [Telegram notify bot](#telegram-notify-bot-self-service).
 - **Backfill mode** – `-from/-to` (plus `-chain` when several chains are enabled) re-processes any
   historical range without touching the cursor.
 - Works **without an API key** at a low request rate; set `TRON_PRO_API_KEY` for more headroom.
@@ -53,24 +65,28 @@ pipeline, compliance monitoring of a set of addresses.
 
 ```mermaid
 flowchart LR
-    subgraph TRON["TRON full-node HTTP API (TronGrid)"]
-        H["/wallet/getblock<br/>(head, header only)"]
-        I["/wallet/gettransactioninfobyblocknum<br/>(receipts + event logs)"]
-        B["/wallet/getblockbynum<br/>(verify empty blocks)"]
-    end
+    TRON["TRON HTTP API (TronGrid)"]
+    TONAPI["toncenter v3 / TON Index"]
+    ETHRPC["Ethereum JSON-RPC"]
 
     subgraph L["tron-usdt-listener"]
-        C["tron.Client<br/>rate limit · retries · backoff"]
-        S["chain/tron/trc20.Source<br/>(implements chain.Source)"]
-        D["trc20 decoder<br/>Transfer log → T-addresses, amount"]
+        S1["chain/tron/trc20.Source"]
+        S2["chain/ton/jetton.Source"]
+        S3["chain/eth/erc20.Source"]
         F["filter<br/>static + runtime watch list · min amount"]
-        P["listener loop<br/>head − confirmations<br/>ordered delivery"]
+        P["listener loop (one per chain)<br/>head − confirmations<br/>ordered delivery"]
         X["sink.Dispatcher<br/>per-sink dedupe (tx_id:log_index)"]
         K[("cursor<br/>file | Postgres")]
-        M["/metrics · /healthz · /v1/addresses"]
+        M["/metrics · /healthz · /v1/addresses · /v1/export.csv"]
+        A["alert<br/>large-transfer channel"]
+        N["notify bot<br/>(tgbot long polling)"]
     end
 
-    H & I & B --> C --> S --> D --> P
+    TRON --> S1 --> P
+    TONAPI --> S2 --> P
+    ETHRPC --> S3 --> P
+    P --> A --> TC["Telegram channel"]
+    P --> N --> TU["Telegram users (DM)"]
     P --> F --> X
     P <--> K
     X --> O["stdout JSON"]
@@ -82,7 +98,7 @@ flowchart LR
     G -. "enabled rows (reload ≤ 5s)" .-> F
 ```
 
-Processing loop:
+Processing loop (shown for TRON; TON and Ethereum follow the same loop with their own sources):
 
 1. Poll head (`/wallet/getblock`, header only), compute `safe = head − confirmations`.
 2. Fetch blocks `cursor+1 … min(safe, cursor+batch_size)` concurrently (one
@@ -485,6 +501,10 @@ How it works (read-only, [toncenter v3 / TON Index](https://toncenter.com/api/v3
   [ton-indexer](https://github.com/toncenter/ton-indexer). `429` / `5xx` are retried with backoff and
   `Retry-After`.
 
+**Live test with a key (2026-10-13):** with a free toncenter key and `TON_RPS=9`, a 90 s mainnet run
+processed 204 masterchain blocks, stayed 3 blocks behind head (the confirmation margin) and logged 0 errors
+(no 401 / 429).
+
 Example TON stdout line (real mainnet transfer, masterchain block 98632901):
 
 ```json
@@ -713,13 +733,14 @@ make test-integration TEST_DATABASE_URL='postgres://postgres:test@localhost:5543
 
 ## 中文简介
 
-**tron-usdt-listener** 是一个用 Go 编写的 **只读** TRON 链 USDT（TRC-20）转账监听器。它按区块范围
-扫描 USDT 合约的 `Transfer` 事件，把十六进制地址解码为 `T…` 地址、按 6 位小数换算金额，并支持
-地址监控（转入/转出）和大额转账阈值过滤。结果可输出到 stdout JSON、带 HMAC-SHA256 签名的
-Webhook、Telegram 机器人以及 PostgreSQL。游标持久化（文件或 Postgres）保证重启后无缝续扫，
-支持确认数、按 `tx_id + log_index` 去重、指数退避重试和 429 限流处理，并提供 Prometheus
-`/metrics` 与 `/healthz`。不需要也不会接触任何私钥，从不发送交易。快速开始：`make build && ./bin/tron-usdt-listener`
-或 `docker compose up -d --build`。
+**USDT-Tracker**（程序和目录名沿用 `tron-usdt-listener`）是一个用 Go 编写的 **只读** 多链 USDT 转账监听器，
+支持 **TRON（TRC-20）、TON（USD₮ jetton）和以太坊（ERC-20）**，可单独或同时运行，每条链独立游标。
+功能包括：地址监控（转入/转出）和大额阈值过滤；输出到 stdout JSON、HMAC-SHA256 签名 Webhook、Telegram
+和 PostgreSQL；超过 10 万 USDT 自动发到 Telegram 频道的大额提醒；按地址导出 CSV 流水；用户自助的
+Telegram 收款通知机器人；运行时增删地址的管理 API（`/v1/addresses`）；按链设置确认数（TRON 20、TON 3、
+以太坊 12）、去重、退避重试、Prometheus `/metrics` 与 `/healthz`；Docker 和 Helm 部署。不需要也不会接触
+任何私钥，从不发送交易。快速开始：`make build && ./bin/tron-usdt-listener` 或 `docker compose up -d --build`。
+商业支持（定制接入、维护、托管）见上文 Commercial support。
 
 **TON 支持：** 设置 `CHAINS=ton`（只监听 TON）或 `CHAINS=tron,ton`（两条链同时运行，各自独立游标，
 共用输出和过滤规则）即可监听 TON 上官方 USD₮ jetton（`EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs`，
@@ -761,15 +782,15 @@ Postgres），用户在机器人里发 `/add <地址>`（自动识别 TRON / TON
 
 ## Кратко на русском
 
-**tron-usdt-listener** — **read-only** сервис на Go для отслеживания переводов USDT (TRC-20) в сети
-TRON. Он обходит блоки по диапазонам, декодирует события `Transfer` контракта USDT (hex → `T…`-адреса,
-сумма с 6 знаками), фильтрует по списку адресов (входящие/исходящие) и порогу крупных переводов и
-отправляет результат в stdout (JSON), webhook с подписью HMAC-SHA256, Telegram-бота и PostgreSQL.
-Курсор хранится в файле или Postgres — после перезапуска обработка продолжается без пропусков; есть
-подтверждения (confirmations), дедупликация по `tx_id + log_index`, ретраи с экспоненциальной
-задержкой и обработка 429, метрики Prometheus и `/healthz`. Приватные ключи не используются,
+**USDT-Tracker** (бинарник и папка исторически называются `tron-usdt-listener`) — **read-only** сервис на Go
+для отслеживания переводов USDT в сетях **TRON (TRC-20), TON (жеттон USD₮) и Ethereum (ERC-20)** — по
+отдельности или одновременно, у каждой сети свой курсор. Возможности: фильтр по адресам (входящие/исходящие)
+и порогу; вывод в stdout (JSON), webhook с подписью HMAC-SHA256, Telegram и PostgreSQL; канал крупных
+переводов (≥ 100 000 USDT) в Telegram; CSV-выгрузка по адресу; бот уведомлений в Telegram для пользователей;
+admin API для адресов без перезапуска (`/v1/addresses`); подтверждения по сетям (TRON 20, TON 3, Ethereum 12),
+дедупликация, ретраи, метрики Prometheus и `/healthz`; Docker и Helm. Приватные ключи не используются,
 транзакции не отправляются. Быстрый старт: `make build && ./bin/tron-usdt-listener` или
-`docker compose up -d --build`.
+`docker compose up -d --build`. Коммерческая поддержка — см. раздел Commercial support.
 
 **TON:** `CHAINS=ton` (только TON) или `CHAINS=tron,ton` (обе сети параллельно, у каждой свой курсор,
 синки и правила фильтра общие) включают отслеживание официального жеттона USD₮ в TON
@@ -811,6 +832,13 @@ TRON. Он обходит блоки по диапазонам, декодиру
 статическим списком из конфига. Без токена API выключен; без Postgres API отвечает 503, а
 статический список работает как раньше. Для Kubernetes есть Helm-чарт `deploy/helm/usdt-tracker`
 (встроенный или внешний PostgreSQL, токен через Secret).
+
+## Commercial support
+
+USDT-Tracker is **open core**: the code here is free under MIT. If you need help, I offer custom
+integration, ongoing maintenance / monitoring and a hosted setup. Contact: GitHub
+[@co-codin](https://github.com/co-codin) or Telegram [@zzwwyy112233](https://t.me/zzwwyy112233).
+Payments are accepted in USDT.
 
 ## License
 
