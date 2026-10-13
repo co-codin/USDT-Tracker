@@ -11,11 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/co-codin/USDT-Tracker/internal/httpx"
+	"golang.org/x/time/rate"
 
 	"github.com/co-codin/USDT-Tracker/internal/retry"
 )
@@ -33,14 +33,15 @@ type Options struct {
 	HTTPClient *http.Client
 	MaxRetries int // per call, default 5
 	Backoff    retry.Backoff
+	// Limiter, if set, throttles every call (e.g. Telegram's ~1 msg/s per chat).
+	Limiter *rate.Limiter
 }
 
 // Client calls the Bot API.
 type Client struct {
 	base     string
-	hc       *http.Client
 	attempts int
-	backoff  retry.Backoff
+	caller   httpx.Caller
 }
 
 // New creates a client.
@@ -58,7 +59,12 @@ func New(o Options) (*Client, error) {
 	if hc == nil {
 		hc = httpx.NewClient(70 * time.Second) // > long-poll timeout
 	}
-	return &Client{base: strings.TrimRight(o.APIBase, "/") + "/bot" + o.Token, hc: hc, attempts: o.MaxRetries, backoff: o.Backoff}, nil
+	return &Client{
+		base:     strings.TrimRight(o.APIBase, "/") + "/bot" + o.Token,
+		attempts: o.MaxRetries,
+		// ScrubErrors: the URL contains the bot token and must never be logged.
+		caller: httpx.Caller{Name: "telegram", HTTP: hc, Limiter: o.Limiter, Backoff: o.Backoff, ScrubErrors: true},
+	}, nil
 }
 
 // APIError is an unsuccessful Bot API response.
@@ -145,26 +151,18 @@ func (c *Client) call(ctx context.Context, method string, params, out any, attem
 	if err != nil {
 		return err
 	}
-	return retry.Do(ctx, attempts, c.backoff, func(ctx context.Context) error {
+	cl := c.caller
+	cl.Attempts = attempts
+	return cl.Do(ctx, method, func(ctx context.Context) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/"+method, bytes.NewReader(body))
 		if err != nil {
-			return retry.Permanent(errors.New("tgbot: invalid api base"))
+			return nil, errors.New("tgbot: invalid api base")
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := c.hc.Do(req) //nolint:bodyclose // closed by httpx.ReadBody
-		if err != nil {
-			if ctx.Err() != nil {
-				return retry.Permanent(ctx.Err())
-			}
-			var ue *url.Error
-			if errors.As(err, &ue) {
-				err = ue.Err // never leak the URL: it contains the bot token
-			}
-			return fmt.Errorf("telegram %s: %w", method, err)
-		}
-		raw, _ := httpx.ReadBody(resp, 8<<20)
+		return req, nil
+	}, func(resp *httpx.Response) error {
 		var r response
-		_ = json.Unmarshal(raw, &r)
+		_ = json.Unmarshal(resp.Body, &r)
 		if resp.StatusCode == http.StatusOK && r.OK {
 			if out != nil {
 				if err := json.Unmarshal(r.Result, out); err != nil {
@@ -177,9 +175,6 @@ func (c *Client) call(ctx context.Context, method string, params, out any, attem
 		if r.Parameters.RetryAfter > 0 {
 			ae.retryAfter = time.Duration(r.Parameters.RetryAfter) * time.Second
 		}
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			return ae
-		}
-		return retry.Permanent(ae)
-	}, nil)
+		return httpx.Classify(resp.StatusCode, ae, 0)
+	})
 }

@@ -101,15 +101,26 @@ func (w *Webhook) Send(ctx context.Context, b Batch) error {
 	if err != nil {
 		return err
 	}
-	return retry.Do(ctx, w.cfg.MaxRetries, w.cfg.Backoff, func(ctx context.Context) error {
-		return w.post(ctx, p.DeliveryID, body)
-	}, nil)
+	return w.caller().Do(ctx, httpx.RedactURL(w.cfg.URL), func(ctx context.Context) (*http.Request, error) {
+		return w.request(ctx, p.DeliveryID, body)
+	}, func(r *httpx.Response) error {
+		if r.OK() {
+			return nil
+		}
+		herr := fmt.Errorf("webhook: HTTP %d: %s", r.StatusCode, httpx.Truncate(string(r.Body), 512))
+		return httpx.Classify(r.StatusCode, herr, r.RetryAfter())
+	})
 }
 
-func (w *Webhook) post(ctx context.Context, deliveryID string, body []byte) error {
+func (w *Webhook) caller() *httpx.Caller {
+	// ScrubErrors: the URL may carry a token in its path or query.
+	return &httpx.Caller{Name: "webhook", HTTP: w.hc, Attempts: w.cfg.MaxRetries, Backoff: w.cfg.Backoff, BodyLimit: 512, ScrubErrors: true}
+}
+
+func (w *Webhook) request(ctx context.Context, deliveryID string, body []byte) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.cfg.URL, bytes.NewReader(body))
 	if err != nil {
-		return retry.Permanent(err)
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "usdt-tracker")
@@ -123,46 +134,8 @@ func (w *Webhook) post(ctx context.Context, deliveryID string, body []byte) erro
 		req.Header.Set(webhooksig.HeaderTimestamp, strconv.FormatInt(ts, 10))
 		req.Header.Set(webhooksig.HeaderSignature, webhooksig.Sign([]byte(w.cfg.Secret), ts, body))
 	}
-	resp, err := w.hc.Do(req) //nolint:bodyclose // closed by httpx.ReadBody
-	if err != nil {
-		if ctx.Err() != nil {
-			return retry.Permanent(ctx.Err())
-		}
-		// The URL may carry a token in its path or query: keep it out of logs.
-		return fmt.Errorf("webhook %s: %w", httpx.RedactURL(w.cfg.URL), httpx.ScrubURLError(err))
-	}
-	snippet, _ := httpx.ReadBody(resp, 512)
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	herr := fmt.Errorf("webhook: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode >= 500 {
-		if ra := parseRetryAfterSeconds(resp.Header.Get("Retry-After")); ra > 0 {
-			return retryAfterErr{err: herr, d: ra}
-		}
-		return herr
-	}
-	return retry.Permanent(herr)
+	return req, nil
 }
 
 // Close implements Sink.
 func (w *Webhook) Close() error { return nil }
-
-type retryAfterErr struct {
-	err error
-	d   time.Duration
-}
-
-func (e retryAfterErr) Error() string             { return e.err.Error() }
-func (e retryAfterErr) Unwrap() error             { return e.err }
-func (e retryAfterErr) RetryAfter() time.Duration { return e.d }
-
-var _ retry.AfterHint = retryAfterErr{}
-
-func parseRetryAfterSeconds(v string) time.Duration {
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n <= 0 {
-		return 0
-	}
-	return time.Duration(n) * time.Second
-}

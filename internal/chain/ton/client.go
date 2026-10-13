@@ -53,15 +53,12 @@ type Options struct {
 
 // Client is a minimal, read-only toncenter v3 client (GET requests only).
 type Client struct {
-	base     string
-	apiKey   string
-	ua       string
-	hc       *http.Client
-	limiter  *rate.Limiter
-	attempts int
-	backoff  retry.Backoff
-	obs      Observer
-	log      *slog.Logger
+	base   string
+	apiKey string
+	ua     string
+	caller *httpx.Caller
+	obs    Observer
+	log    *slog.Logger
 }
 
 // NewClient creates a client with sane defaults.
@@ -91,11 +88,16 @@ func NewClient(o Options) *Client {
 	if hc == nil {
 		hc = httpx.NewClient(o.Timeout)
 	}
-	return &Client{
-		base: strings.TrimRight(o.BaseURL, "/"), apiKey: o.APIKey, ua: o.UserAgent, hc: hc,
-		limiter: rate.NewLimiter(rate.Limit(o.RPS), o.Burst), attempts: o.MaxRetries,
-		backoff: o.Backoff, obs: o.Observer, log: o.Logger,
+	c := &Client{base: strings.TrimRight(o.BaseURL, "/"), apiKey: o.APIKey, ua: o.UserAgent, obs: o.Observer, log: o.Logger}
+	c.caller = &httpx.Caller{
+		Name: "ton",
+		HTTP: hc, Limiter: rate.NewLimiter(rate.Limit(o.RPS), o.Burst), Attempts: o.MaxRetries,
+		Backoff: o.Backoff, BodyLimit: maxResponseBytes, OnRetry: c.onRetry, ScrubErrors: true,
 	}
+	if o.Observer != nil {
+		c.caller.Observe = o.Observer.ObserveRequest
+	}
+	return c
 }
 
 // HTTPError is returned for non-2xx responses.
@@ -159,105 +161,46 @@ func (c *Client) JettonTransfers(ctx context.Context, master string, startLt, en
 }
 
 func (c *Client) get(ctx context.Context, path string, q url.Values, out any) error {
-	return retry.Do(ctx, c.attempts, c.backoff, func(ctx context.Context) error {
-		return c.doOnce(ctx, path, q, out)
-	}, func(attempt int, delay time.Duration, err error) {
-		reason := "error"
-		var he *HTTPError
-		if errors.As(err, &he) {
-			reason = strconv.Itoa(he.StatusCode)
-			if he.StatusCode == http.StatusTooManyRequests {
-				reason = "rate_limited"
-			}
-		}
-		if c.obs != nil {
-			c.obs.ObserveRetry(path, reason)
-		}
-		c.log.Warn("ton api retry", "endpoint", path, "attempt", attempt, "delay", delay.String(), "err", err)
-	})
-}
-
-func (c *Client) doOnce(ctx context.Context, path string, q url.Values, out any) error {
-	if err := c.limiter.Wait(ctx); err != nil {
-		return retry.Permanent(err)
-	}
 	u := c.base + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return retry.Permanent(err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", c.ua)
-	if c.apiKey != "" {
-		req.Header.Set("X-API-Key", c.apiKey)
-	}
-	start := time.Now()
-	resp, err := c.hc.Do(req) //nolint:bodyclose // closed by httpx.ReadBody
-	if err != nil {
-		c.observe(path, "network_error", start)
-		if ctx.Err() != nil {
-			return retry.Permanent(ctx.Err())
+	return c.caller.Do(ctx, path, func(ctx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, err
 		}
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err // keep the query string out of logs
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", c.ua)
+		if c.apiKey != "" {
+			req.Header.Set("X-API-Key", c.apiKey)
 		}
-		return fmt.Errorf("ton %s: %w", path, err)
-	}
-	body, err := httpx.ReadBody(resp, maxResponseBytes)
-	c.observe(path, strconv.Itoa(resp.StatusCode), start)
-	if err != nil {
-		return fmt.Errorf("ton %s: read body: %w", path, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		he := &HTTPError{Endpoint: path, StatusCode: resp.StatusCode, Body: truncate(string(body), 300)}
-		he.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
-		switch {
-		case resp.StatusCode == http.StatusTooManyRequests:
-			if he.retryAfter == 0 {
+		return req, nil
+	}, func(r *httpx.Response) error {
+		if !r.OK() {
+			he := &HTTPError{Endpoint: path, StatusCode: r.StatusCode, Body: truncate(string(r.Body), 300), retryAfter: r.RetryAfter()}
+			if r.StatusCode == http.StatusTooManyRequests && he.retryAfter == 0 {
 				he.retryAfter = time.Second
 			}
-			return he
-		case resp.StatusCode >= 500, resp.StatusCode == http.StatusRequestTimeout:
-			return he
-		default:
-			return retry.Permanent(he)
+			return httpx.Classify(r.StatusCode, he, 0)
 		}
-	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("ton %s: decode response: %w", path, err)
-	}
-	return nil
+		if err := json.Unmarshal(r.Body, out); err != nil {
+			return fmt.Errorf("ton %s: decode response: %w", path, err)
+		}
+		return nil
+	})
 }
 
-func (c *Client) observe(path, status string, start time.Time) {
+func (c *Client) onRetry(path string, attempt int, delay time.Duration, err error) {
+	code := 0
+	var he *HTTPError
+	if errors.As(err, &he) {
+		code = he.StatusCode
+	}
 	if c.obs != nil {
-		c.obs.ObserveRequest(path, status, time.Since(start))
+		c.obs.ObserveRetry(path, httpx.RetryReason(code, false))
 	}
+	c.log.Warn("ton api retry", "endpoint", path, "attempt", attempt, "delay", delay.String(), "err", err)
 }
 
-func parseRetryAfter(v string) time.Duration {
-	if v == "" {
-		return 0
-	}
-	if secs, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && secs >= 0 {
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(v); err == nil {
-		if d := time.Until(t); d > 0 {
-			return d
-		}
-	}
-	return 0
-}
-
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
+func truncate(s string, n int) string { return httpx.Truncate(s, n) }

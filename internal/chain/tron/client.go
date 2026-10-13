@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -49,15 +48,12 @@ type Options struct {
 // Client is a minimal, read-only TRON HTTP API client. It only calls query
 // endpoints; it never signs or broadcasts transactions.
 type Client struct {
-	base     string
-	apiKey   string
-	ua       string
-	hc       *http.Client
-	limiter  *rate.Limiter
-	attempts int
-	backoff  retry.Backoff
-	obs      Observer
-	log      *slog.Logger
+	base   string
+	apiKey string
+	ua     string
+	caller *httpx.Caller
+	obs    Observer
+	log    *slog.Logger
 }
 
 // NewClient creates a client with sane defaults.
@@ -87,17 +83,23 @@ func NewClient(o Options) *Client {
 	if hc == nil {
 		hc = httpx.NewClient(o.Timeout)
 	}
-	return &Client{
-		base:     strings.TrimRight(o.BaseURL, "/"),
-		apiKey:   o.APIKey,
-		ua:       o.UserAgent,
-		hc:       hc,
-		limiter:  rate.NewLimiter(rate.Limit(o.RPS), o.Burst),
-		attempts: o.MaxRetries,
-		backoff:  o.Backoff,
-		obs:      o.Observer,
-		log:      o.Logger,
+	c := &Client{
+		base:   strings.TrimRight(o.BaseURL, "/"),
+		apiKey: o.APIKey,
+		ua:     o.UserAgent,
+		obs:    o.Observer,
+		log:    o.Logger,
 	}
+	c.caller = &httpx.Caller{
+		Name: "tron",
+		HTTP: hc, Limiter: rate.NewLimiter(rate.Limit(o.RPS), o.Burst),
+		Attempts: o.MaxRetries, Backoff: o.Backoff, BodyLimit: maxResponseBytes,
+		OnRetry: c.onRetry,
+	}
+	if o.Observer != nil {
+		c.caller.Observe = o.Observer.ObserveRequest
+	}
+	return c
 }
 
 // HTTPError is returned for non-2xx responses.
@@ -129,10 +131,7 @@ type APIError struct {
 
 func (e *APIError) Error() string { return fmt.Sprintf("tron %s: %s", e.Endpoint, e.Message) }
 
-func isRateLimitBody(b string) bool {
-	l := strings.ToLower(b)
-	return strings.Contains(l, "frequency") || strings.Contains(l, "rate limit") || strings.Contains(l, "exceed")
-}
+func isRateLimitBody(b string) bool { return httpx.TronRateLimitBody(b) }
 
 // NowBlock returns the latest block header.
 //
@@ -196,69 +195,34 @@ func (c *Client) post(ctx context.Context, path string, reqBody, out any) error 
 	if err != nil {
 		return err
 	}
-	return retry.Do(ctx, c.attempts, c.backoff, func(ctx context.Context) error {
-		return c.doOnce(ctx, path, payload, out)
-	}, func(attempt int, delay time.Duration, err error) {
-		reason := "error"
-		var he *HTTPError
-		if errors.As(err, &he) {
-			reason = strconv.Itoa(he.StatusCode)
-			if he.RateLimited() {
-				reason = "rate_limited"
-			}
+	return c.caller.Do(ctx, path, func(ctx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
 		}
-		if c.obs != nil {
-			c.obs.ObserveRetry(path, reason)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", c.ua)
+		if c.apiKey != "" {
+			req.Header.Set("TRON-PRO-API-KEY", c.apiKey)
 		}
-		c.log.Warn("tron api retry", "endpoint", path, "attempt", attempt, "delay", delay.String(), "err", err)
-	})
+		return req, nil
+	}, func(r *httpx.Response) error { return c.handle(path, r, out) })
 }
 
-func (c *Client) doOnce(ctx context.Context, path string, payload []byte, out any) error {
-	if err := c.limiter.Wait(ctx); err != nil {
-		return retry.Permanent(err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(payload))
-	if err != nil {
-		return retry.Permanent(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", c.ua)
-	if c.apiKey != "" {
-		req.Header.Set("TRON-PRO-API-KEY", c.apiKey)
-	}
-
-	start := time.Now()
-	resp, err := c.hc.Do(req) //nolint:bodyclose // closed by httpx.ReadBody
-	if err != nil {
-		c.observe(path, "network_error", start)
-		if ctx.Err() != nil {
-			return retry.Permanent(ctx.Err())
-		}
-		return fmt.Errorf("tron %s: %w", path, err)
-	}
-	body, err := httpx.ReadBody(resp, maxResponseBytes)
-	c.observe(path, strconv.Itoa(resp.StatusCode), start)
-	if err != nil {
-		return fmt.Errorf("tron %s: read body: %w", path, err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		he := &HTTPError{Endpoint: path, StatusCode: resp.StatusCode, Body: truncate(string(body), 300)}
-		he.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
-		switch {
-		case he.RateLimited():
-			if he.retryAfter == 0 && resp.StatusCode == http.StatusForbidden {
+func (c *Client) handle(path string, r *httpx.Response, out any) error {
+	body := r.Body
+	if !r.OK() {
+		he := &HTTPError{Endpoint: path, StatusCode: r.StatusCode, Body: truncate(string(body), 300)}
+		he.retryAfter = r.RetryAfter()
+		if he.RateLimited() {
+			if he.retryAfter == 0 && r.StatusCode == http.StatusForbidden {
 				// TronGrid temporarily bans keys/IPs that exceed the limit.
 				he.retryAfter = 30 * time.Second
 			}
 			return he
-		case resp.StatusCode >= 500, resp.StatusCode == http.StatusRequestTimeout:
-			return he
-		default:
-			return retry.Permanent(he)
 		}
+		return httpx.Classify(r.StatusCode, he, 0)
 	}
 
 	var apiErr struct {
@@ -273,31 +237,18 @@ func (c *Client) doOnce(ctx context.Context, path string, payload []byte, out an
 	return nil
 }
 
-func (c *Client) observe(path, status string, start time.Time) {
+func (c *Client) onRetry(path string, attempt int, delay time.Duration, err error) {
+	code, limited := 0, false
+	var he *HTTPError
+	if errors.As(err, &he) {
+		code, limited = he.StatusCode, he.RateLimited()
+	}
 	if c.obs != nil {
-		c.obs.ObserveRequest(path, status, time.Since(start))
+		c.obs.ObserveRetry(path, httpx.RetryReason(code, limited))
 	}
+	c.log.Warn("tron api retry", "endpoint", path, "attempt", attempt, "delay", delay.String(), "err", err)
 }
 
-func parseRetryAfter(v string) time.Duration {
-	if v == "" {
-		return 0
-	}
-	if secs, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && secs >= 0 {
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(v); err == nil {
-		if d := time.Until(t); d > 0 {
-			return d
-		}
-	}
-	return 0
-}
+func truncate(s string, n int) string { return httpx.Truncate(s, n) }
 
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
+func parseRetryAfter(v string) time.Duration { return httpx.ParseRetryAfter(v) }

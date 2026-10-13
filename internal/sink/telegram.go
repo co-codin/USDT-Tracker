@@ -1,19 +1,16 @@
 package sink
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"html"
 	"math/big"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/co-codin/USDT-Tracker/internal/httpx"
+	"github.com/co-codin/USDT-Tracker/internal/tgbot"
 
 	"golang.org/x/time/rate"
 
@@ -47,9 +44,8 @@ type TelegramConfig struct {
 
 // Telegram sends human-friendly alerts via the Telegram Bot API.
 type Telegram struct {
-	cfg     TelegramConfig
-	hc      *http.Client
-	limiter *rate.Limiter
+	cfg TelegramConfig
+	bot *tgbot.Client
 }
 
 // NewTelegram validates cfg and creates the sink.
@@ -79,8 +75,15 @@ func NewTelegram(cfg TelegramConfig) (*Telegram, error) {
 	if hc == nil {
 		hc = httpx.NewClient(15 * time.Second)
 	}
-	// Telegram allows ~1 message/second per chat.
-	return &Telegram{cfg: cfg, hc: hc, limiter: rate.NewLimiter(rate.Every(1100*time.Millisecond), 3)}, nil
+	bot, err := tgbot.New(tgbot.Options{
+		Token: cfg.BotToken, APIBase: cfg.APIBase, HTTPClient: hc, MaxRetries: cfg.MaxRetries, Backoff: cfg.Backoff,
+		// Telegram allows ~1 message/second per chat.
+		Limiter: rate.NewLimiter(rate.Every(1100*time.Millisecond), 3),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("telegram: %w", err)
+	}
+	return &Telegram{cfg: cfg, bot: bot}, nil
 }
 
 // Name implements Sink.
@@ -179,63 +182,8 @@ func tail(s string, n int) string {
 	return s[len(s)-n:]
 }
 
-type tgResponse struct {
-	OK          bool   `json:"ok"`
-	Description string `json:"description"`
-	ErrorCode   int    `json:"error_code"`
-	Parameters  struct {
-		RetryAfter int `json:"retry_after"`
-	} `json:"parameters"`
-}
-
 func (t *Telegram) sendMessage(ctx context.Context, text string) error {
-	body, err := json.Marshal(map[string]any{
-		"chat_id":                  t.cfg.ChatID,
-		"text":                     text,
-		"parse_mode":               "HTML",
-		"disable_web_page_preview": true,
-	})
-	if err != nil {
-		return err
-	}
-	endpoint := strings.TrimRight(t.cfg.APIBase, "/") + "/bot" + t.cfg.BotToken + "/sendMessage"
-	return retry.Do(ctx, t.cfg.MaxRetries, t.cfg.Backoff, func(ctx context.Context) error {
-		if err := t.limiter.Wait(ctx); err != nil {
-			return retry.Permanent(err)
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
-			return retry.Permanent(err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := t.hc.Do(req) //nolint:bodyclose // closed by httpx.ReadBody
-		if err != nil {
-			if ctx.Err() != nil {
-				return retry.Permanent(ctx.Err())
-			}
-			// Never include the URL (it contains the bot token) in errors.
-			var ue *url.Error
-			if errors.As(err, &ue) {
-				err = ue.Err
-			}
-			return fmt.Errorf("telegram: request failed: %w", err)
-		}
-		raw, _ := httpx.ReadBody(resp, 4096)
-		var r tgResponse
-		_ = json.Unmarshal(raw, &r)
-		if resp.StatusCode == http.StatusOK && r.OK {
-			return nil
-		}
-		err = fmt.Errorf("telegram: HTTP %d: %s", resp.StatusCode, r.Description)
-		switch {
-		case resp.StatusCode == http.StatusTooManyRequests:
-			return retryAfterErr{err: err, d: time.Duration(r.Parameters.RetryAfter) * time.Second}
-		case resp.StatusCode >= 500:
-			return err
-		default:
-			return retry.Permanent(err)
-		}
-	}, nil)
+	return t.bot.SendMessage(ctx, t.cfg.ChatID, text, tgbot.SendOptions{HTML: true, DisablePreview: true})
 }
 
 // Close implements Sink.

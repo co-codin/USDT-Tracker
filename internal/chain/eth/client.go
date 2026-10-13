@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -54,15 +53,12 @@ type Options struct {
 
 // Client is a read-only Ethereum JSON-RPC client.
 type Client struct {
-	url      string
-	ua       string
-	hc       *http.Client
-	limiter  *rate.Limiter
-	attempts int
-	backoff  retry.Backoff
-	obs      Observer
-	log      *slog.Logger
-	id       atomic.Int64
+	url    string
+	ua     string
+	caller *httpx.Caller
+	obs    Observer
+	log    *slog.Logger
+	id     atomic.Int64
 }
 
 // NewClient creates a client with sane defaults.
@@ -92,10 +88,15 @@ func NewClient(o Options) *Client {
 	if hc == nil {
 		hc = httpx.NewClient(o.Timeout)
 	}
-	return &Client{
-		url: o.URL, ua: o.UserAgent, hc: hc, limiter: rate.NewLimiter(rate.Limit(o.RPS), o.Burst),
-		attempts: o.MaxRetries, backoff: o.Backoff, obs: o.Observer, log: o.Logger,
+	c := &Client{url: o.URL, ua: o.UserAgent, obs: o.Observer, log: o.Logger}
+	c.caller = &httpx.Caller{
+		Name: "eth", HTTP: hc, Limiter: rate.NewLimiter(rate.Limit(o.RPS), o.Burst), Attempts: o.MaxRetries,
+		Backoff: o.Backoff, BodyLimit: maxResponseBytes, OnRetry: c.onRetry, ScrubErrors: true,
 	}
+	if o.Observer != nil {
+		c.caller.Observe = o.Observer.ObserveRequest
+	}
+	return c
 }
 
 // RedactURL returns scheme://host of an RPC URL, hiding paths, query strings
@@ -256,22 +257,21 @@ var ErrBatchUnsupported = errors.New("eth: JSON-RPC batch requests not supported
 // untrustworthy. Returns ErrBatchUnsupported (permanent) when the endpoint
 // refuses batches.
 func (c *Client) LogsWithHeaders(ctx context.Context, f LogFilter) ([]Log, []*Header, error) {
+	body, decode, err := c.batchRequest(f)
+	if err != nil {
+		return nil, nil, err
+	}
 	var logs []Log
 	var hdrs []*Header
-	err := retry.Do(ctx, c.attempts, c.backoff, func(ctx context.Context) error {
-		var err error
-		logs, hdrs, err = c.batchOnce(ctx, f)
-		return err
-	}, func(attempt int, delay time.Duration, err error) {
-		if c.obs != nil {
-			c.obs.ObserveRetry("eth_getLogs+headers", "error")
-		}
-		c.log.Warn("eth rpc retry", "method", "eth_getLogs+headers", "attempt", attempt, "delay", delay.String(), "err", err)
+	err = c.post(ctx, "eth_getLogs+headers", body, func(raw []byte) error {
+		var derr error
+		logs, hdrs, derr = decode(raw)
+		return derr
 	})
 	return logs, hdrs, err
 }
 
-func (c *Client) batchOnce(ctx context.Context, f LogFilter) ([]Log, []*Header, error) {
+func (c *Client) batchRequest(f LogFilter) ([]byte, func([]byte) ([]Log, []*Header, error), error) {
 	topics := make([]any, len(f.Topics))
 	for i, t := range f.Topics {
 		topics[i] = t
@@ -290,12 +290,12 @@ func (c *Client) batchOnce(ctx context.Context, f LogFilter) ([]Log, []*Header, 
 	}
 	body, err := json.Marshal(reqs)
 	if err != nil {
-		return nil, nil, retry.Permanent(err)
-	}
-	raw, err := c.post(ctx, "eth_getLogs+headers", body)
-	if err != nil {
 		return nil, nil, err
 	}
+	return body, func(raw []byte) ([]Log, []*Header, error) { return decodeBatch(raw, f, n, logsID, ids) }, nil
+}
+
+func decodeBatch(raw []byte, f LogFilter, n int, logsID int64, ids map[int64]int) ([]Log, []*Header, error) {
 	var resps []rpcResponse
 	if err := json.Unmarshal(raw, &resps); err != nil {
 		var single rpcResponse
@@ -368,25 +368,40 @@ func ParseQuantity(s string) (int64, error) {
 }
 
 func (c *Client) call(ctx context.Context, method string, params []any, out any) error {
-	return retry.Do(ctx, c.attempts, c.backoff, func(ctx context.Context) error {
-		return c.doOnce(ctx, method, params, out)
-	}, func(attempt int, delay time.Duration, err error) {
-		reason := "error"
-		var he *HTTPError
-		var re *RPCError
-		switch {
-		case errors.As(err, &he) && he.StatusCode == http.StatusTooManyRequests:
-			reason = "rate_limited"
-		case errors.As(err, &he):
-			reason = strconv.Itoa(he.StatusCode)
-		case errors.As(err, &re):
-			reason = "rpc_" + strconv.Itoa(re.Code)
+	body, err := json.Marshal(rpcRequest{JSONRPC: "2.0", ID: c.id.Add(1), Method: method, Params: params})
+	if err != nil {
+		return err
+	}
+	return c.post(ctx, method, body, func(raw []byte) error {
+		var r rpcResponse
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return fmt.Errorf("eth %s: decode response: %w", method, err)
 		}
-		if c.obs != nil {
-			c.obs.ObserveRetry(method, reason)
+		if r.Error != nil {
+			r.Error.Method = method
+			return classifyRPCError(method, r.Error)
 		}
-		c.log.Warn("eth rpc retry", "method", method, "attempt", attempt, "delay", delay.String(), "err", err)
+		if err := json.Unmarshal(r.Result, out); err != nil {
+			return fmt.Errorf("eth %s: decode result: %w", method, err)
+		}
+		return nil
 	})
+}
+
+func (c *Client) onRetry(method string, attempt int, delay time.Duration, err error) {
+	var he *HTTPError
+	var re *RPCError
+	reason := "error"
+	switch {
+	case errors.As(err, &he):
+		reason = httpx.RetryReason(he.StatusCode, false)
+	case errors.As(err, &re):
+		reason = "rpc_" + strconv.Itoa(re.Code)
+	}
+	if c.obs != nil {
+		c.obs.ObserveRetry(method, reason)
+	}
+	c.log.Warn("eth rpc retry", "method", method, "attempt", attempt, "delay", delay.String(), "err", err)
 }
 
 type rpcRequest struct {
@@ -402,78 +417,31 @@ type rpcResponse struct {
 	Error  *RPCError       `json:"error"`
 }
 
-func (c *Client) doOnce(ctx context.Context, method string, params []any, out any) error {
-	body, err := json.Marshal(rpcRequest{JSONRPC: "2.0", ID: c.id.Add(1), Method: method, Params: params})
-	if err != nil {
-		return retry.Permanent(err)
-	}
-	raw, err := c.post(ctx, method, body)
-	if err != nil {
-		return err
-	}
-	var r rpcResponse
-	if err := json.Unmarshal(raw, &r); err != nil {
-		return fmt.Errorf("eth %s: decode response: %w", method, err)
-	}
-	if r.Error != nil {
-		r.Error.Method = method
-		return classifyRPCError(method, r.Error)
-	}
-	if err := json.Unmarshal(r.Result, out); err != nil {
-		return fmt.Errorf("eth %s: decode result: %w", method, err)
-	}
-	return nil
-}
-
-// post sends one JSON-RPC HTTP request (single call or batch) and returns
-// the raw 2xx body. label names the call in errors and metrics.
-func (c *Client) post(ctx context.Context, label string, body []byte) ([]byte, error) {
-	if err := c.limiter.Wait(ctx); err != nil {
-		return nil, retry.Permanent(err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
-	if err != nil {
-		return nil, retry.Permanent(errors.New("eth: invalid rpc url"))
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", c.ua)
-	start := time.Now()
-	resp, err := c.hc.Do(req) //nolint:bodyclose // closed by httpx.ReadBody
-	if err != nil {
-		c.observe(label, "network_error", start)
-		if ctx.Err() != nil {
-			return nil, retry.Permanent(ctx.Err())
+// post sends one JSON-RPC HTTP request (single call or batch) with retries
+// and hands each 2xx body to decode. label names the call in errors and metrics.
+func (c *Client) post(ctx context.Context, label string, body []byte, decode func([]byte) error) error {
+	return c.caller.Do(ctx, label, func(ctx context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
+		if err != nil {
+			return nil, errors.New("eth: invalid rpc url")
 		}
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err // the URL may contain an API key: keep it out of logs
-		}
-		return nil, fmt.Errorf("eth %s: %w", label, err)
-	}
-	raw, err := httpx.ReadBody(resp, maxResponseBytes)
-	c.observe(label, strconv.Itoa(resp.StatusCode), start)
-	if err != nil {
-		return nil, fmt.Errorf("eth %s: read body: %w", label, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		he := &HTTPError{Method: label, StatusCode: resp.StatusCode, Body: truncate(string(raw), 300)}
-		he.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
-		switch {
-		case resp.StatusCode == http.StatusTooManyRequests:
-			if he.retryAfter == 0 {
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", c.ua)
+		return req, nil
+	}, func(r *httpx.Response) error {
+		if !r.OK() {
+			he := &HTTPError{Method: label, StatusCode: r.StatusCode, Body: truncate(string(r.Body), 300), retryAfter: r.RetryAfter()}
+			switch {
+			case r.StatusCode == http.StatusTooManyRequests && he.retryAfter == 0:
 				he.retryAfter = time.Second
+			case r.StatusCode == http.StatusRequestEntityTooLarge && strings.HasPrefix(label, "eth_getLogs"):
+				return retry.Permanent(fmt.Errorf("%w: %w", ErrRangeTooLarge, he))
 			}
-			return nil, he
-		case resp.StatusCode == http.StatusRequestEntityTooLarge && strings.HasPrefix(label, "eth_getLogs"):
-			return nil, retry.Permanent(fmt.Errorf("%w: %w", ErrRangeTooLarge, he))
-		case resp.StatusCode >= 500, resp.StatusCode == http.StatusRequestTimeout:
-			return nil, he
-		default:
-			return nil, retry.Permanent(he)
+			return httpx.Classify(r.StatusCode, he, 0)
 		}
-	}
-	return raw, nil
+		return decode(r.Body)
+	})
 }
 
 // classifyRPCError maps provider-specific JSON-RPC errors: range/result
@@ -497,31 +465,4 @@ func classifyRPCError(method string, e *RPCError) error {
 	}
 }
 
-func (c *Client) observe(method, status string, start time.Time) {
-	if c.obs != nil {
-		c.obs.ObserveRequest(method, status, time.Since(start))
-	}
-}
-
-func parseRetryAfter(v string) time.Duration {
-	if v == "" {
-		return 0
-	}
-	if secs, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && secs >= 0 {
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(v); err == nil {
-		if d := time.Until(t); d > 0 {
-			return d
-		}
-	}
-	return 0
-}
-
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
+func truncate(s string, n int) string { return httpx.Truncate(s, n) }
