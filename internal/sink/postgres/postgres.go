@@ -77,8 +77,23 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("postgres: acquire: %w", err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockID); err != nil {
-		return fmt.Errorf("postgres: advisory lock: %w", err)
+	// Poll pg_try_advisory_lock instead of blocking in pg_advisory_lock: a
+	// session blocked inside a statement holds a snapshot, and CREATE INDEX
+	// CONCURRENTLY run by the lock holder waits for every older snapshot —
+	// a deadlock when two instances migrate at once.
+	for {
+		var ok bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, migrationLockID).Scan(&ok); err != nil {
+			return fmt.Errorf("postgres: advisory lock: %w", err)
+		}
+		if ok {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("postgres: advisory lock: %w", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	defer conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrationLockID) //nolint:errcheck
 
