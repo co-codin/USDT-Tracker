@@ -119,6 +119,13 @@ func TestNoStoreReturns503(t *testing.T) {
 			t.Errorf("%s %s: %d %s", r[0], r[1], code, body)
 		}
 	}
+	// Unknown paths are 404 even without a store; errors carry a code.
+	if code, body, _ := c.do("GET", "/v1/nope", bearer, ""); code != http.StatusNotFound || !strings.Contains(body, `"code":"not_found"`) {
+		t.Errorf("unknown path: %d %s", code, body)
+	}
+	if _, body, _ := c.do("GET", "/v1/addresses", bearer, ""); !strings.Contains(body, `"code":"postgres_required"`) {
+		t.Errorf("503 code: %s", body)
+	}
 	// Auth is still checked first.
 	if code, _, _ := c.do("GET", "/v1/addresses", "", ""); code != http.StatusUnauthorized {
 		t.Errorf("no auth: %d", code)
@@ -289,5 +296,46 @@ func TestAPITONAddresses(t *testing.T) {
 	c2 := newClient(t, APIConfig{Token: token, Store: NewMemoryStore(), Chains: []string{"tron"}})
 	if code, body, _ := c2.do("POST", "/v1/addresses", bearer, `{"address":"`+raw+`"}`); code != http.StatusBadRequest || !strings.Contains(body, "not enabled") {
 		t.Errorf("disabled chain: %d %s", code, body)
+	}
+}
+
+func TestListPagination(t *testing.T) {
+	store := NewMemoryStore()
+	c := newClient(t, APIConfig{Token: token, Store: store})
+	for _, a := range []string{alice, bob, "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"} {
+		if code, body, _ := c.do("POST", "/v1/addresses", bearer, `{"address":"`+a+`"}`); code != http.StatusCreated {
+			t.Fatal(code, body)
+		}
+	}
+	var got []string
+	cursor := ""
+	for page := 0; page < 5; page++ {
+		path := "/v1/addresses?limit=2"
+		if cursor != "" {
+			path += "&cursor=" + cursor
+		}
+		code, body, _ := c.do("GET", path, bearer, "")
+		if code != 200 {
+			t.Fatal(code, body)
+		}
+		var r listResponse
+		if err := json.Unmarshal([]byte(body), &r); err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range r.Addresses {
+			got = append(got, e.Address)
+		}
+		if r.NextCursor == "" {
+			break
+		}
+		cursor = r.NextCursor
+	}
+	if len(got) != 3 {
+		t.Fatalf("paged %v", got)
+	}
+	for _, q := range []string{"limit=0", "limit=1001", "limit=x", "cursor=@@", "cursor=LTE"} {
+		if code, body, _ := c.do("GET", "/v1/addresses?"+q, bearer, ""); code != 400 || !strings.Contains(body, `"code":"invalid_request"`) {
+			t.Errorf("%s: %d %s", q, code, body)
+		}
 	}
 }

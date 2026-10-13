@@ -70,7 +70,7 @@ func TestWriteEscapingAndDirection(t *testing.T) {
 		row(ethA, ethA, "", 100_000_000_000),
 	}}
 	var buf bytes.Buffer
-	n, err := Write(context.Background(), &buf, src, Query{Chain: "eth", Address: ethA}, nil)
+	n, err := Write(context.Background(), &buf, src, Query{Chain: "eth", Address: ethA}, Options{})
 	if err != nil || n != 3 {
 		t.Fatal(n, err)
 	}
@@ -144,7 +144,54 @@ func TestHandler(t *testing.T) {
 
 func TestWriteSourceError(t *testing.T) {
 	src := &fakeSrc{rows: []Row{row(ethB, ethA, "", 1)}, err: errors.New("boom")}
-	if _, err := Write(context.Background(), &bytes.Buffer{}, src, Query{Address: ethA}, nil); err == nil {
+	if _, err := Write(context.Background(), &bytes.Buffer{}, src, Query{Address: ethA}, Options{}); err == nil {
 		t.Fatal("error swallowed")
+	}
+}
+
+func TestSafeFormulaInjection(t *testing.T) {
+	for in, want := range map[string]string{
+		"":          "",
+		"order 42":  "order 42",
+		"=1+1":      "'=1+1",
+		" =1+1":     "' =1+1",
+		"\n=1":      "'\n=1",
+		"＝1":        "'＝1",
+		"|cmd":      "'|cmd",
+		"%0A":       "'%0A",
+		"\t@x":      "'\t@x",
+		"-5":        "'-5",
+		"a\r\nb":    "a\r\nb",
+		"Ref#CwZT6": "Ref#CwZT6",
+	} {
+		if got := safe(in); got != want {
+			t.Errorf("safe(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestHandlerJSONErrorsAndBOM(t *testing.T) {
+	src := &fakeSrc{rows: []Row{row(ethB, ethA, "备注", 1)}}
+	h := NewHandler(tok, src, nil)
+	get := func(q string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/v1/export.csv?"+q, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	w := get("address=nope")
+	if w.Code != 400 || w.Header().Get("Content-Type") != "application/json" || !strings.Contains(w.Body.String(), `"code":"invalid_request"`) {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if w := get("address=" + ethA + "&bom=x"); w.Code != 400 {
+		t.Fatal(w.Code)
+	}
+	w = get("address=" + ethA + "&bom=1")
+	if w.Code != 200 || !strings.HasPrefix(w.Body.String(), BOM+"time_utc,") {
+		t.Fatalf("%q", w.Body.String()[:20])
+	}
+	if w := get("address=" + ethA); strings.HasPrefix(w.Body.String(), BOM) {
+		t.Fatal("BOM without bom=1")
 	}
 }

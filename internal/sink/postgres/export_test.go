@@ -51,7 +51,7 @@ func TestExportIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	cnt, err := export.Write(ctx, &buf, s, export.Query{Chain: "eth", Address: me}, nil)
+	cnt, err := export.Write(ctx, &buf, s, export.Query{Chain: "eth", Address: me}, export.Options{})
 	if err != nil || cnt != n {
 		t.Fatalf("rows %d err %v", cnt, err)
 	}

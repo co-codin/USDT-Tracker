@@ -8,19 +8,26 @@ package watch
 //
 // chain is "tron", "ton" or "eth"; when omitted it is detected from the address.
 //
+// GET supports ?limit= (1-1000, default 1000) and ?cursor= (the
+// next_cursor of the previous page).
+//
 // Every request needs "Authorization: Bearer <API_TOKEN>". With an empty
 // token the API is disabled (404 for every /v1 path); without a store
-// (Postgres sink disabled) authenticated requests get 503.
+// (Postgres sink disabled) authenticated requests to existing endpoints get
+// 503, unknown paths 404. Errors are {"error": "...", "code": "..."}.
 
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/co-codin/USDT-Tracker/internal/apierr"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -56,13 +63,13 @@ func NewAPI(cfg APIConfig) *API {
 		cfg.OnChange = func() {}
 	}
 	h := &API{cfg: cfg, tokenHash: sha256.Sum256([]byte(cfg.Token)), mux: http.NewServeMux()}
-	h.mux.HandleFunc("GET /v1/addresses", h.list)
-	h.mux.HandleFunc("POST /v1/addresses", h.add)
-	h.mux.HandleFunc("DELETE /v1/addresses/{address}", h.remove)
+	h.mux.HandleFunc("GET /v1/addresses", h.needStore(h.list))
+	h.mux.HandleFunc("POST /v1/addresses", h.needStore(h.add))
+	h.mux.HandleFunc("DELETE /v1/addresses/{address}", h.needStore(h.remove))
 	h.mux.HandleFunc("/v1/addresses", methodNotAllowed("GET, POST"))
 	h.mux.HandleFunc("/v1/addresses/{address}", methodNotAllowed("DELETE"))
 	h.mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		writeError(w, http.StatusNotFound, "not found")
+		apierr.Write(w, http.StatusNotFound, apierr.CodeNotFound, "not found")
 	})
 	return h
 }
@@ -71,23 +78,29 @@ func NewAPI(cfg APIConfig) *API {
 func (h *API) Enabled() bool { return h.cfg.Token != "" }
 
 // ServeHTTP implements http.Handler: disabled → 404, bad token → 401,
-// no store → 503, then routing.
+// then routing (unknown path → 404, no store → 503).
 func (h *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.Enabled() {
-		writeError(w, http.StatusNotFound, "admin API disabled: set API_TOKEN (or api.token) to enable it")
+		apierr.Write(w, http.StatusNotFound, apierr.CodeAPIDisabled, "admin API disabled: set API_TOKEN (or api.token) to enable it")
 		return
 	}
 	if !h.authorized(r) {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="usdt-tracker"`)
-		writeError(w, http.StatusUnauthorized, "missing or invalid bearer token")
-		return
-	}
-	if h.cfg.Store == nil {
-		writeError(w, http.StatusServiceUnavailable,
-			"runtime watch list requires the postgres sink (set SINK_POSTGRES_ENABLED=true and DATABASE_URL); static filter.watch_addresses still apply")
+		apierr.Write(w, http.StatusUnauthorized, apierr.CodeUnauthorized, "missing or invalid bearer token")
 		return
 	}
 	h.mux.ServeHTTP(w, r)
+}
+
+func (h *API) needStore(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.cfg.Store == nil {
+			apierr.Write(w, http.StatusServiceUnavailable, apierr.CodePostgresRequired,
+				"runtime watch list requires the postgres sink (set SINK_POSTGRES_ENABLED=true and DATABASE_URL); static filter.watch_addresses still apply")
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (h *API) authorized(r *http.Request) bool {
@@ -104,9 +117,13 @@ func (h *API) authorized(r *http.Request) bool {
 }
 
 type listResponse struct {
-	Addresses []Entry  `json:"addresses"`
-	Static    []string `json:"static_addresses"`
+	Addresses  []Entry  `json:"addresses"`
+	Static     []string `json:"static_addresses"`
+	NextCursor string   `json:"next_cursor,omitempty"`
 }
+
+// MaxPageSize is the largest (and default) GET /v1/addresses page.
+const MaxPageSize = 1000
 
 func (h *API) list(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.cfg.Store.ListWatches(r.Context())
@@ -127,14 +144,39 @@ func (h *API) list(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = kept
 	}
-	if rows == nil {
-		rows = []Entry{}
+	limit := MaxPageSize
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > MaxPageSize {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("limit must be between 1 and %d", MaxPageSize))
+			return
+		}
+		limit = n
 	}
-	static := h.cfg.Static
-	if static == nil {
-		static = []string{}
+	start := 0
+	if v := r.URL.Query().Get("cursor"); v != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(v)
+		n, err2 := strconv.Atoi(string(raw))
+		if err != nil || err2 != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		start = min(n, len(rows))
 	}
-	writeJSON(w, http.StatusOK, listResponse{Addresses: rows, Static: static})
+	resp := listResponse{Addresses: rows[start:min(len(rows), start+limit)]}
+	if end := start + limit; end < len(rows) {
+		// Offsets into the (created_at, address) order: stable unless rows
+		// are added/removed between pages.
+		resp.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(end)))
+	}
+	if resp.Addresses == nil {
+		resp.Addresses = []Entry{}
+	}
+	resp.Static = h.cfg.Static
+	if resp.Static == nil {
+		resp.Static = []string{}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type addRequest struct {
@@ -166,7 +208,7 @@ func (h *API) add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.chainEnabled(chain) {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("chain %q is not enabled on this listener (enabled: %s)", chain, strings.Join(h.cfg.Chains, ",")))
+		apierr.Write(w, http.StatusBadRequest, apierr.CodeChainDisabled, fmt.Sprintf("chain %q is not enabled on this listener (enabled: %s)", chain, strings.Join(h.cfg.Chains, ",")))
 		return
 	}
 	dir, err := NormalizeDirection(req.Direction)
@@ -245,6 +287,18 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
+// writeError maps a status to its default error code.
+func writeError(w http.ResponseWriter, status int, msg string) {
+	code := apierr.CodeInvalidRequest
+	switch status {
+	case http.StatusNotFound:
+		code = apierr.CodeNotFound
+	case http.StatusConflict:
+		code = apierr.CodeConflict
+	case http.StatusMethodNotAllowed:
+		code = apierr.CodeMethodNotAllowed
+	case http.StatusInternalServerError:
+		code = apierr.CodeInternal
+	}
+	apierr.Write(w, status, code, msg)
 }

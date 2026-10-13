@@ -26,9 +26,11 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		from       = fs.String("from", "", "start, inclusive: YYYY-MM-DD or RFC 3339 (UTC)")
 		to         = fs.String("to", "", "end: YYYY-MM-DD (whole day included) or RFC 3339 (exclusive)")
 		out        = fs.String("o", "", "output file (default stdout)")
+		bom        = fs.Bool("bom", false, "prefix a UTF-8 byte order mark (for Excel)")
 	)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: tron-usdt-listener export -address <addr> [-chain tron|ton|eth] [-from YYYY-MM-DD] [-to YYYY-MM-DD] [-o file.csv]")
+		fmt.Fprintln(stderr, "usage: tron-usdt-listener export -address <addr> [-chain tron|ton|eth] [-from YYYY-MM-DD] [-to YYYY-MM-DD] [-o file.csv] [-bom]")
+		fmt.Fprintln(stderr, "Times are UTC (RFC 3339); amounts are exact decimal strings.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -57,16 +59,22 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 	}
 	defer pg.Close()
 	w := stdout
+	var f *os.File
 	if *out != "" {
-		f, err := os.Create(*out) //nolint:gosec // G304: operator-supplied output path
+		f, err = os.Create(*out) //nolint:gosec // G304: operator-supplied output path
 		if err != nil {
 			fmt.Fprintln(stderr, "export:", err)
 			return 1
 		}
-		defer f.Close()
 		w = f
 	}
-	n, err := export.Write(ctx, w, pg, q, nil)
+	n, err := export.Write(ctx, w, pg, q, export.Options{BOM: *bom})
+	if f != nil {
+		// A failed Close (e.g. disk full on flush) means a truncated file.
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "export:", err)
 		return 1
