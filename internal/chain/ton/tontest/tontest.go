@@ -145,7 +145,8 @@ func genItems(n int64) []item {
 }
 
 // AddBurst adds k extra USD₮ transfers to masterchain block n (shard A),
-// `perLt` of them sharing each logical time, e.g. an airdrop.
+// `perLt` of them sharing each logical time, e.g. an airdrop. Keep
+// k/perLt below 400 so every lt stays inside shard A's range.
 func (s *Server) AddBurst(n int64, k, perLt int) {
 	aLo, _, _, _ := ranges(n)
 	if perLt < 1 {

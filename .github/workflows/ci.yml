@@ -37,6 +37,10 @@ jobs:
           TEST_DATABASE_URL: postgres://listener:listener@localhost:5432/tron_test?sslmode=disable
       - name: build
         run: go build ./cmd/usdt-tracker
+      - name: e2e (real binary vs mock chains, Telegram, webhook + Postgres)
+        run: go test -tags e2e -count=1 -timeout 10m ./test/e2e/
+        env:
+          TEST_DATABASE_URL: postgres://listener:listener@localhost:5432/tron_test?sslmode=disable
 
   lint:
     runs-on: ubuntu-latest
@@ -70,6 +74,10 @@ jobs:
       - uses: azure/setup-helm@v4
       - name: helm dependency build
         run: helm dependency build deploy/helm/usdt-tracker
+      - name: kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | sudo tar xz -C /usr/local/bin kubeconform
+          ./scripts/helm-e2e.sh
       - name: helm lint
         run: helm lint deploy/helm/usdt-tracker --set secrets.apiToken=0123456789abcdef0123
       - name: helm template (bundled and external Postgres)

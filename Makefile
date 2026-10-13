@@ -9,7 +9,7 @@ include .env
 export
 endif
 
-.PHONY: help build run backfill test test-race cover test-integration vet fmt lint tidy docker-build up down logs clean
+.PHONY: help build run backfill test test-race cover test-integration e2e helm-e2e smoke vet fmt lint tidy docker-build up down logs clean
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -35,7 +35,16 @@ cover: ## Tests with per-package coverage + HTML report (coverage.html)
 	go tool cover -html=coverage.out -o coverage.html
 
 test-integration: ## Postgres tests: make test-integration TEST_DATABASE_URL=postgres://...
-	TEST_DATABASE_URL=$(TEST_DATABASE_URL) go test -race -count=1 -run 'Integration|Postgres|AdminAPI' -v ./internal/sink/postgres/ ./internal/app/
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) go test -race -count=1 ./...
+
+e2e: ## End-to-end suite (real binary, mock chains/Telegram/webhook, real Postgres): make e2e TEST_DATABASE_URL=postgres://...
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) go test -tags e2e -count=1 -v -timeout 10m ./test/e2e/
+
+helm-e2e: ## helm template + kubeconform for several value sets
+	./scripts/helm-e2e.sh
+
+smoke: ## Read-only live smoke test against public mainnet (SECS=60, keys from env only)
+	./scripts/live-smoke.sh
 
 vet: ## go vet
 	go vet ./...

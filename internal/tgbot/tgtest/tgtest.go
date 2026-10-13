@@ -69,7 +69,10 @@ func (s *Server) SentTo(chatID string) []Sent {
 func (s *Server) BadTokenCalls() int { s.mu.Lock(); defer s.mu.Unlock(); return s.badToken }
 
 // UserSays queues a private text message from user/chat id.
-func (s *Server) UserSays(chatID int64, text string) {
+func (s *Server) UserSays(chatID int64, text string) { s.UserSaysLang(chatID, text, "") }
+
+// UserSaysLang is UserSays from a client with the given language_code.
+func (s *Server) UserSaysLang(chatID int64, text, lang string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.updates = append(s.updates, map[string]any{
@@ -77,7 +80,7 @@ func (s *Server) UserSays(chatID int64, text string) {
 		"message": map[string]any{
 			"message_id": s.nextID, "text": text, "date": time.Now().Unix(),
 			"chat": map[string]any{"id": chatID, "type": "private"},
-			"from": map[string]any{"id": chatID, "is_bot": false, "username": "u"},
+			"from": map[string]any{"id": chatID, "is_bot": false, "username": "u", "language_code": lang},
 		},
 	})
 	s.nextID++
@@ -164,8 +167,15 @@ func toString(v any) string {
 func jsonNum(f float64) string { b, _ := json.Marshal(f); return string(b) }
 
 func toFloat(v any) float64 {
-	f, _ := v.(float64)
-	return f
+	switch x := v.(type) {
+	case float64:
+		return x
+	case int64:
+		return float64(x)
+	case int:
+		return float64(x)
+	}
+	return 0
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

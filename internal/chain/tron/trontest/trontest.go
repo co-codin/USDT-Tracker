@@ -79,7 +79,8 @@ func (s *Server) SetHead(h int64) {
 }
 
 // FailBlock makes the next len(codes) tx-info requests for block n return
-// the given HTTP status codes (429 responses carry "Retry-After: 0").
+// the given HTTP status codes (429 responses carry "Retry-After: 0"; 403 is
+// TronGrid's frequency-limit ban with "Retry-After: 1").
 func (s *Server) FailBlock(n int64, codes ...int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -272,6 +273,9 @@ func (s *Server) getTxInfo(w http.ResponseWriter, r *http.Request) {
 	case code == http.StatusTooManyRequests:
 		w.Header().Set("Retry-After", "0")
 		http.Error(w, `{"Error":"rate limited"}`, code)
+	case code == http.StatusForbidden: // TronGrid's frequency-limit ban
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, `{"Error":"request rate exceeded the allowed_rps(15), and the query server is suspended for 1s"}`, code)
 	case code != 0:
 		http.Error(w, "injected failure", code)
 	case n > head || empty:
