@@ -130,10 +130,14 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		if err != nil {
 			return nil, errors.Join(err, a.disp.Close())
 		}
-		a.Alerts, err = alert.New(alert.Config{
+		acfg := alert.Config{
 			ChatID: la.ChatID, Threshold: la.Threshold, Interval: la.Interval.D(),
 			MaxPerMessage: la.MaxPerMessage, QueueSize: la.QueueSize, Footer: la.Footer,
-		}, bot, log.With("component", "large_alerts"))
+		}
+		if pg != nil {
+			acfg.Outbox = pg.Outbox() // durable: restart neither drops nor repeats alerts
+		}
+		a.Alerts, err = alert.New(acfg, bot, log.With("component", "large_alerts"))
 		if err != nil {
 			return nil, errors.Join(err, a.disp.Close())
 		}
@@ -152,7 +156,7 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 			FreeLimit: nb.FreeLimit, PremiumLimit: nb.PremiumLimit, MinAmount: nb.MinAmount,
 			Chains: chains, PollTimeout: nb.PollTimeout.D(),
 			MaxUsers: nb.MaxUsers, MaxTotalSubs: nb.MaxTotalSubs, CommandsPerMinute: nb.CommandsPerMinute,
-			PremiumContact: nb.PremiumContact,
+			PremiumContact: nb.PremiumContact, Outbox: pg.Outbox(),
 		}, pg.Notify(), api, log.With("component", "notify_bot"))
 		if err != nil {
 			return nil, errors.Join(err, a.disp.Close())

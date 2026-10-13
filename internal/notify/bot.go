@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -17,9 +18,9 @@ import (
 
 	"github.com/co-codin/USDT-Tracker/internal/chain"
 	"github.com/co-codin/USDT-Tracker/internal/chainaddr"
-	"github.com/co-codin/USDT-Tracker/internal/cursor"
 	"github.com/co-codin/USDT-Tracker/internal/explorer"
 	"github.com/co-codin/USDT-Tracker/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/outbox"
 	"github.com/co-codin/USDT-Tracker/internal/tgbot"
 )
 
@@ -43,7 +44,14 @@ type Config struct {
 	PollTimeout     time.Duration // getUpdates long-poll timeout, default 50s
 	RefreshInterval time.Duration // subscription cache refresh, default 5s
 	SendRPS         float64       // global message rate, default 25/s (Telegram: ~30/s)
-	QueueSize       int           // pending notifications, default 10000
+	QueueSize       int           // pending notifications for the in-memory outbox, default 10000
+	// Outbox stores pending notifications. With Postgres (the app's default)
+	// delivery is at-least-once and deduplicated across restarts; nil uses a
+	// bounded in-memory outbox (lost on restart).
+	Outbox outbox.Store
+	// MaxAttempts per message before it is given up (default 5; each attempt
+	// already retries transient Telegram errors).
+	MaxAttempts int
 	// MaxUsers / MaxTotalSubs cap bot-wide users (chats that used /add) and
 	// subscriptions; /add is refused beyond them. 0 = unlimited.
 	MaxUsers     int
@@ -83,6 +91,9 @@ func (c *Config) defaults() {
 	}
 	if c.CommandsPerMinute <= 0 {
 		c.CommandsPerMinute = 20
+	}
+	if c.MaxAttempts <= 0 {
+		c.MaxAttempts = 5
 	}
 }
 
@@ -135,7 +146,18 @@ type note struct {
 	t      model.Transfer
 	dir    string // in|out|self
 	addr   string // the subscribed address
+	lang   string
 }
+
+// notePayload is the outbox JSON of a note.
+type notePayload struct {
+	T    model.Transfer `json:"t"`
+	Dir  string         `json:"dir"`
+	Addr string         `json:"addr"`
+	Lang string         `json:"lang,omitempty"`
+}
+
+func (n note) key() string { return fmt.Sprintf("%d|%s|%s", n.chatID, n.t.Key(), n.dir) }
 
 // Bot is the notify bot. Create with New, feed blocks with Observe (a
 // listener.Tap) and run with Run.
@@ -147,9 +169,9 @@ type Bot struct {
 	index   atomic.Pointer[map[string][]int64] // chain|address → chat ids
 	dirty   chan struct{}
 	mu      sync.Mutex
-	queue   []note
+	box     outbox.Store
+	mem     *outbox.Memory
 	wake    chan struct{}
-	seen    *cursor.Dedupe
 	minAmt  map[int]*big.Int
 	limiter *rate.Limiter
 	sent    atomic.Int64
@@ -170,8 +192,12 @@ func New(cfg Config, store Store, api API, log *slog.Logger) (*Bot, error) {
 		log = slog.New(slog.DiscardHandler)
 	}
 	b := &Bot{cfg: cfg, store: store, api: api, log: log, dirty: make(chan struct{}, 1), wake: make(chan struct{}, 1),
-		seen: cursor.NewDedupe(200_000), minAmt: map[int]*big.Int{}, limiter: rate.NewLimiter(rate.Limit(cfg.SendRPS), 1),
+		box: cfg.Outbox, minAmt: map[int]*big.Int{}, limiter: rate.NewLimiter(rate.Limit(cfg.SendRPS), 1),
 		chats: map[int64]*chatLimiter{}}
+	if b.box == nil {
+		b.mem = outbox.NewMemory(cfg.QueueSize)
+		b.box = b.mem
+	}
 	empty := map[string][]int64{}
 	b.index.Store(&empty)
 	return b, nil
@@ -219,14 +245,27 @@ func (b *Bot) min(decimals int) *big.Int {
 	return m
 }
 
-// Observe queues notifications for subscribed addresses in block bl
-// (listener.Tap: called with every decoded transfer, never blocks).
-func (b *Bot) Observe(_ context.Context, bl chain.Block) {
+// Observe enqueues notifications for subscribed addresses in block bl
+// (listener.Tap). Keys are chat|transfer|direction, so a replayed block adds
+// nothing; an outbox error makes the listener retry the block before its
+// cursor is saved. It never waits on Telegram.
+func (b *Bot) Observe(ctx context.Context, bl chain.Block) error {
 	idx := *b.index.Load()
 	if len(idx) == 0 {
-		return
+		return nil
 	}
-	var notes []note
+	var items []outbox.Item
+	add := func(n note) error {
+		if v, ok := b.langs.Load(n.chatID); ok {
+			n.lang, _ = v.(string)
+		}
+		p, err := json.Marshal(notePayload{T: n.t, Dir: n.dir, Addr: n.addr, Lang: n.lang})
+		if err != nil {
+			return err
+		}
+		items = append(items, outbox.Item{Key: n.key(), ChatID: n.chatID, Payload: p})
+		return nil
+	}
 	for _, t := range bl.Transfers {
 		if t.Amount == nil || t.Amount.Cmp(b.min(t.Decimals)) < 0 {
 			continue
@@ -238,33 +277,39 @@ func (b *Bot) Observe(_ context.Context, bl chain.Block) {
 			if t.From == t.To {
 				dir = "self"
 			}
-			notes = append(notes, note{chatID: id, t: t, dir: dir, addr: t.To})
+			if err := add(note{chatID: id, t: t, dir: dir, addr: t.To}); err != nil {
+				return fmt.Errorf("notify: encode: %w", err)
+			}
 		}
 		if t.From != t.To {
 			for _, id := range fromChats {
-				notes = append(notes, note{chatID: id, t: t, dir: "out", addr: t.From})
+				if err := add(note{chatID: id, t: t, dir: "out", addr: t.From}); err != nil {
+					return fmt.Errorf("notify: encode: %w", err)
+				}
 			}
 		}
 	}
-	if len(notes) == 0 {
-		return
+	if len(items) == 0 {
+		return nil
 	}
-	b.mu.Lock()
-	for _, n := range notes {
-		if !b.seen.Add(fmt.Sprintf("%d|%s|%s", n.chatID, n.t.Key(), n.dir)) {
-			continue
+	var before int64
+	if b.mem != nil {
+		before = b.mem.Dropped()
+	}
+	added, err := b.box.Enqueue(ctx, outbox.KindNotify, items)
+	if err != nil {
+		return fmt.Errorf("notify: enqueue: %w", err)
+	}
+	if b.mem != nil {
+		b.dropped.Add(b.mem.Dropped() - before)
+	}
+	if added > 0 {
+		select {
+		case b.wake <- struct{}{}:
+		default:
 		}
-		b.queue = append(b.queue, n)
 	}
-	if over := len(b.queue) - b.cfg.QueueSize; over > 0 {
-		b.queue = append([]note(nil), b.queue[over:]...)
-		b.dropped.Add(int64(over))
-	}
-	b.mu.Unlock()
-	select {
-	case b.wake <- struct{}{}:
-	default:
-	}
+	return nil
 }
 
 // Run polls commands, refreshes the subscription index and delivers
@@ -506,61 +551,91 @@ func (b *Bot) parseAddress(lang, s string) (string, string, error) {
 }
 
 func (b *Bot) sendLoop(ctx context.Context) {
-	for {
-		b.mu.Lock()
-		n := len(b.queue)
-		b.mu.Unlock()
-		if n == 0 {
+	for ctx.Err() == nil {
+		if !b.sendNext(ctx) {
 			select {
 			case <-ctx.Done():
 				return
 			case <-b.wake:
-				continue
+			case <-time.After(2 * time.Second): // retries and rows left by a previous run
 			}
 		}
-		if err := b.limiter.Wait(ctx); err != nil {
-			return
-		}
-		b.sendNext(ctx)
 	}
 }
 
-// sendNext sends the oldest notification, merged with up to 9 more queued
-// for the same chat (keeps a busy address under Telegram's per-chat limit).
-func (b *Bot) sendNext(ctx context.Context) {
-	b.mu.Lock()
-	if len(b.queue) == 0 {
-		b.mu.Unlock()
-		return
-	}
-	first := b.queue[0]
-	batch := []note{first}
-	rest := b.queue[:0:0]
-	for _, n := range b.queue[1:] {
-		if n.chatID == first.chatID && len(batch) < 10 {
-			batch = append(batch, n)
-		} else {
-			rest = append(rest, n)
+// sendNext sends the oldest pending notification, merged with up to 9 more
+// pending for the same chat (keeps a busy address under Telegram's per-chat
+// limit). It reports whether there was anything to send.
+func (b *Bot) sendNext(ctx context.Context) bool {
+	items, err := b.box.Pending(ctx, outbox.KindNotify, 200)
+	if err != nil {
+		if ctx.Err() == nil {
+			b.log.Warn("notify: outbox unavailable", "err", err)
 		}
+		return false
 	}
-	b.queue = rest
-	b.mu.Unlock()
-	lang := LangEN
-	if v, ok := b.langs.Load(first.chatID); ok {
+	if len(items) == 0 {
+		return false
+	}
+	if err := b.limiter.Wait(ctx); err != nil {
+		return false
+	}
+	first := items[0].ChatID
+	var batch []note
+	var keys, bad []string
+	attempts := 0
+	for _, it := range items {
+		if it.ChatID != first || len(batch) == 10 {
+			continue
+		}
+		var p notePayload
+		if err := json.Unmarshal(it.Payload, &p); err != nil {
+			bad = append(bad, it.Key)
+			continue
+		}
+		batch = append(batch, note{chatID: it.ChatID, t: p.T, dir: p.Dir, addr: p.Addr, lang: p.Lang})
+		keys = append(keys, it.Key)
+		attempts = max(attempts, it.Attempts)
+	}
+	dctx := context.WithoutCancel(ctx)
+	if len(bad) > 0 {
+		_ = b.box.Done(dctx, outbox.KindNotify, bad, outbox.StatusFailed)
+	}
+	if len(batch) == 0 {
+		return true
+	}
+	lang := batch[len(batch)-1].lang
+	if v, ok := b.langs.Load(first); ok {
 		lang, _ = v.(string)
 	}
-	err := b.api.SendMessage(ctx, strconv.FormatInt(first.chatID, 10), format(lang, batch), tgbot.SendOptions{HTML: true, DisablePreview: true})
+	if lang == "" {
+		lang = LangEN
+	}
+	err = b.api.SendMessage(ctx, strconv.FormatInt(first, 10), format(lang, batch), tgbot.SendOptions{HTML: true, DisablePreview: true})
 	switch {
 	case tgbot.IsForbidden(err):
-		b.log.Info("notify: user blocked the bot, pausing deliveries", "chat_id", first.chatID)
-		if err := b.store.SetBlocked(ctx, first.chatID, true); err == nil {
+		b.log.Info("notify: user blocked the bot, pausing deliveries", "chat_id", first)
+		_ = b.box.Done(dctx, outbox.KindNotify, keys, outbox.StatusDropped)
+		b.dropped.Add(int64(len(batch)))
+		if err := b.store.SetBlocked(ctx, first, true); err == nil {
 			b.markDirty()
 		}
+	case err != nil && ctx.Err() != nil:
+		// shutting down: leave pending, the next run resends
+	case err != nil && attempts+1 < b.cfg.MaxAttempts:
+		b.log.Warn("notify: delivery failed, will retry", "chat_id", first, "attempt", attempts+1, "err", err)
+		_ = b.box.Failed(dctx, outbox.KindNotify, keys)
 	case err != nil:
-		b.log.Warn("notify: delivery failed", "chat_id", first.chatID, "err", err)
+		b.log.Warn("notify: delivery failed, giving up", "chat_id", first, "attempts", attempts+1, "err", err)
+		_ = b.box.Done(dctx, outbox.KindNotify, keys, outbox.StatusFailed)
+		b.dropped.Add(int64(len(batch)))
 	default:
+		if derr := b.box.Done(dctx, outbox.KindNotify, keys, outbox.StatusSent); derr != nil {
+			b.log.Warn("notify: sent but not marked done (may repeat after restart)", "err", derr)
+		}
 		b.sent.Add(int64(len(batch)))
 	}
+	return true
 }
 
 // format renders notifications for one chat in lang.

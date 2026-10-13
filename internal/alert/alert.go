@@ -3,12 +3,15 @@
 // every decoded transfer of every confirmed block by the listeners, keeps a
 // bounded in-memory queue and sends at a steady pace that respects Telegram
 // limits (≈20 messages/minute per channel), batching several transfers into
-// one message when there is a backlog. Alerts are best-effort: they never
-// block the listeners, and a full queue drops the oldest pending alerts.
+// one message when there is a backlog. Alerts are queued in an outbox: with
+// Postgres it is durable (at-least-once across restarts, deduplicated by
+// transfer id); without it an in-memory queue bounded by QueueSize drops the
+// oldest pending alerts. Observe never waits on Telegram.
 package alert
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"log/slog"
@@ -19,9 +22,9 @@ import (
 	"time"
 
 	"github.com/co-codin/USDT-Tracker/internal/chain"
-	"github.com/co-codin/USDT-Tracker/internal/cursor"
 	"github.com/co-codin/USDT-Tracker/internal/explorer"
 	"github.com/co-codin/USDT-Tracker/internal/model"
+	"github.com/co-codin/USDT-Tracker/internal/outbox"
 	"github.com/co-codin/USDT-Tracker/internal/tgbot"
 )
 
@@ -44,6 +47,11 @@ type Config struct {
 	// Footer is an optional HTML line appended to every message (e.g. a link
 	// to your project).
 	Footer string
+	// Outbox stores pending alerts (default: in-memory, bounded by QueueSize).
+	Outbox outbox.Store
+	// MaxAttempts is how many sends an alert gets before it is given up
+	// (default 3; each send already retries transient Telegram errors).
+	MaxAttempts int
 }
 
 // Stats are cumulative counters.
@@ -57,8 +65,8 @@ type Alerter struct {
 	send   Sender
 	log    *slog.Logger
 	mu     sync.Mutex
-	queue  []model.Transfer
-	seen   *cursor.Dedupe
+	box    outbox.Store
+	mem    *outbox.Memory   // non-nil when box is the in-memory default
 	thr    map[int]*big.Int // decimals → raw threshold
 	stats  Stats
 	wake   chan struct{}
@@ -88,10 +96,19 @@ func New(cfg Config, send Sender, log *slog.Logger) (*Alerter, error) {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 1000
 	}
+	if cfg.MaxAttempts <= 0 {
+		cfg.MaxAttempts = 3
+	}
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Alerter{cfg: cfg, send: send, log: log, seen: cursor.NewDedupe(100_000), thr: map[int]*big.Int{}, wake: make(chan struct{}, 1)}, nil
+	a := &Alerter{cfg: cfg, send: send, log: log, box: cfg.Outbox, thr: map[int]*big.Int{}, wake: make(chan struct{}, 1)}
+	if a.box == nil {
+		a.mem = outbox.NewMemory(cfg.QueueSize)
+		a.mem.MaxKeys = 100_000
+		a.box = a.mem
+	}
+	return a, nil
 }
 
 // OnSent registers a telemetry callback (status: sent|failed|dropped).
@@ -116,25 +133,41 @@ func (a *Alerter) threshold(decimals int) *big.Int {
 	return t
 }
 
-// Observe queues every transfer of b at or above the threshold. It never
-// blocks on the network. It matches listener.Tap.
-func (a *Alerter) Observe(_ context.Context, b chain.Block) {
+// Observe enqueues every transfer of b at or above the threshold (keyed by
+// transfer id, so a replayed block adds nothing). It never waits on
+// Telegram. It matches listener.Tap; an error (outbox unavailable) makes the
+// listener retry the block before saving its cursor.
+func (a *Alerter) Observe(ctx context.Context, b chain.Block) error {
 	a.mu.Lock()
-	added, dropped := 0, 0
+	var items []outbox.Item
 	for _, t := range b.Transfers {
 		if t.Amount == nil || t.Amount.Cmp(a.threshold(t.Decimals)) < 0 {
 			continue
 		}
-		if !a.seen.Add(t.Key()) {
-			continue // re-processed block (restart / retry)
+		p, err := json.Marshal(t)
+		if err != nil {
+			a.mu.Unlock()
+			return fmt.Errorf("alert: encode: %w", err)
 		}
-		a.queue = append(a.queue, t)
-		added++
+		items = append(items, outbox.Item{Key: t.Key(), Payload: p})
 	}
-	if over := len(a.queue) - a.cfg.QueueSize; over > 0 {
-		a.queue = append([]model.Transfer(nil), a.queue[over:]...)
-		dropped = over
+	a.mu.Unlock()
+	if len(items) == 0 {
+		return nil
 	}
+	var before int64
+	if a.mem != nil {
+		before = a.mem.Dropped()
+	}
+	added, err := a.box.Enqueue(ctx, outbox.KindAlert, items)
+	if err != nil {
+		return fmt.Errorf("alert: enqueue: %w", err)
+	}
+	dropped := 0
+	if a.mem != nil {
+		dropped = int(a.mem.Dropped() - before)
+	}
+	a.mu.Lock()
 	a.stats.Queued += int64(added)
 	a.stats.Dropped += int64(dropped)
 	a.mu.Unlock()
@@ -148,6 +181,7 @@ func (a *Alerter) Observe(_ context.Context, b chain.Block) {
 		default:
 		}
 	}
+	return nil
 }
 
 // Stats returns a snapshot of the counters.
@@ -157,11 +191,13 @@ func (a *Alerter) Stats() Stats {
 	return a.stats
 }
 
-// Pending returns the number of queued alerts.
+// Pending returns the number of queued alerts (0 if the outbox is unreachable).
 func (a *Alerter) Pending() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return len(a.queue)
+	n, err := a.box.Count(context.Background(), outbox.KindAlert)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // Run sends queued alerts until ctx is done, at most one message per
@@ -174,7 +210,9 @@ func (a *Alerter) Run(ctx context.Context, flushTimeout time.Duration) {
 			case <-ctx.Done():
 				return
 			case <-a.wake:
+			case <-time.After(5 * time.Second): // durable outbox: pick up rows left by a previous run
 			}
+			continue
 		}
 		if wait := a.cfg.Interval - time.Since(last); !last.IsZero() && wait > 0 {
 			select {
@@ -222,32 +260,57 @@ func sleep(ctx context.Context, d time.Duration) error {
 
 // sendNext sends one message with up to MaxPerMessage queued transfers.
 func (a *Alerter) sendNext(ctx context.Context) {
-	a.mu.Lock()
-	n := min(len(a.queue), a.cfg.MaxPerMessage)
-	batch := append([]model.Transfer(nil), a.queue[:n]...)
-	a.queue = a.queue[n:]
-	backlog := len(a.queue)
-	a.mu.Unlock()
+	items, err := a.box.Pending(ctx, outbox.KindAlert, a.cfg.MaxPerMessage)
+	if err != nil {
+		a.log.Warn("large-transfer alert outbox unavailable", "err", err)
+		return
+	}
+	if len(items) == 0 {
+		return
+	}
+	batch := make([]model.Transfer, 0, len(items))
+	keys := make([]string, 0, len(items))
+	var bad []string
+	for _, it := range items {
+		var t model.Transfer
+		if err := json.Unmarshal(it.Payload, &t); err != nil {
+			bad = append(bad, it.Key)
+			continue
+		}
+		batch = append(batch, t)
+		keys = append(keys, it.Key)
+	}
+	if len(bad) > 0 {
+		_ = a.box.Done(ctx, outbox.KindAlert, bad, outbox.StatusFailed)
+	}
+	n := len(batch)
 	if n == 0 {
 		return
 	}
 	text := Format(batch, a.cfg.Footer)
-	err := a.send.SendMessage(ctx, a.cfg.ChatID, text, tgbot.SendOptions{HTML: true, DisablePreview: true})
-	a.mu.Lock()
+	err = a.send.SendMessage(ctx, a.cfg.ChatID, text, tgbot.SendOptions{HTML: true, DisablePreview: true})
 	if err != nil {
+		a.log.Error("large-transfer alert failed", "transfers", n, "attempt", items[0].Attempts+1, "err", err)
+		if items[0].Attempts+1 < a.cfg.MaxAttempts && ctx.Err() == nil {
+			_ = a.box.Failed(ctx, outbox.KindAlert, keys)
+			return
+		}
+		_ = a.box.Done(context.WithoutCancel(ctx), outbox.KindAlert, keys, outbox.StatusFailed)
+		a.mu.Lock()
 		a.stats.Failed += int64(n)
-	} else {
-		a.stats.Sent += int64(n)
-		a.stats.Messages++
-	}
-	a.mu.Unlock()
-	if err != nil {
-		a.log.Error("large-transfer alert failed", "transfers", n, "err", err)
+		a.mu.Unlock()
 		a.count("failed", n)
 		return
 	}
+	if derr := a.box.Done(context.WithoutCancel(ctx), outbox.KindAlert, keys, outbox.StatusSent); derr != nil {
+		a.log.Warn("large-transfer alert sent but not marked done (may repeat after restart)", "err", derr)
+	}
+	a.mu.Lock()
+	a.stats.Sent += int64(n)
+	a.stats.Messages++
+	a.mu.Unlock()
 	a.count("sent", n)
-	a.log.Debug("large-transfer alert sent", "transfers", n, "backlog", backlog)
+	a.log.Debug("large-transfer alert sent", "transfers", n)
 }
 
 // Format renders one Telegram HTML message for transfers (largest first when

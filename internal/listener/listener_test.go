@@ -275,9 +275,10 @@ func (s *failingStore) Save(ctx context.Context, st cursor.State) error {
 	return s.MemoryStore.Save(ctx, st)
 }
 
-// Taps fire once per block, only after delivery and the cursor save, so a
-// block retried after a sink or cursor failure is not tapped twice.
-func TestTapsRunOncePerCommittedBlock(t *testing.T) {
+// Taps run after delivery and before the cursor save (at-least-once): a
+// failing tap holds the cursor back and is retried; a block replayed after a
+// cursor failure is tapped again (taps are idempotent via the outbox).
+func TestTapsRunBeforeCursorSaveAndRetry(t *testing.T) {
 	src := &fakeSource{head: 30}
 	store := &failingStore{failAt: 12}
 	_ = store.Save(context.Background(), cursor.State{LastBlock: 9})
@@ -286,14 +287,20 @@ func TestTapsRunOncePerCommittedBlock(t *testing.T) {
 	rec := &recorder{stopAt: 20, cancel: cancel, failAt: map[int64]int{11: 2}}
 	var mu sync.Mutex
 	tapped := map[int64]int{}
+	tapFails := 2
 	cfg := fastCfg()
-	cfg.Taps = []Tap{func(_ context.Context, b chain.Block) {
-		mu.Lock()
-		tapped[b.Number]++
-		mu.Unlock()
-		if st, _ := store.Load(context.Background()); st.LastBlock != b.Number {
-			t.Errorf("tap for block %d before its cursor was saved (cursor %d)", b.Number, st.LastBlock)
+	cfg.Taps = []Tap{func(_ context.Context, b chain.Block) error {
+		if st, _ := store.Load(context.Background()); st.LastBlock != b.Number-1 {
+			t.Errorf("tap for block %d with cursor %d (want cursor not yet advanced)", b.Number, st.LastBlock)
 		}
+		mu.Lock()
+		defer mu.Unlock()
+		if b.Number == 15 && tapFails > 0 {
+			tapFails--
+			return errors.New("outbox down")
+		}
+		tapped[b.Number]++
+		return nil
 	}}
 	if err := New(cfg, src, allFilter(t), rec, store, nil, nil).Run(ctx); err != nil {
 		t.Fatal(err)
@@ -301,8 +308,15 @@ func TestTapsRunOncePerCommittedBlock(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	for n := int64(10); n <= 20; n++ {
-		if tapped[n] != 1 {
-			t.Fatalf("block %d tapped %d times (%v)", n, tapped[n], tapped)
+		want := 1
+		if n == 12 {
+			want = 2 // cursor save failed once: replayed
 		}
+		if tapped[n] != want {
+			t.Fatalf("block %d tapped %d times, want %d (%v)", n, tapped[n], want, tapped)
+		}
+	}
+	if tapFails != 0 {
+		t.Fatal("failing tap was not retried")
 	}
 }

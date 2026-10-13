@@ -37,15 +37,17 @@ type Config struct {
 	Backoff         retry.Backoff // backoff for loop-level errors
 	Chain           string        // chain name for metrics/logs (default "tron")
 	// Taps see every decoded transfer (unfiltered) of each confirmed block
-	// once the block was delivered and its cursor saved (e.g. the
-	// large-transfer channel, the notify bot): at most once per block, also
-	// across restarts. They must not block; they are not called in backfill
-	// mode.
+	// after the sinks accepted it and before its cursor is saved (e.g. the
+	// large-transfer channel, the notify bot). A failing tap is retried like
+	// a failing sink, so the cursor never moves past a block a tap has not
+	// recorded: at-least-once. Taps must therefore be idempotent per block
+	// (they enqueue into a deduplicating outbox) and must not block on the
+	// network. They are not called in backfill mode.
 	Taps []Tap
 }
 
-// Tap observes unfiltered blocks.
-type Tap func(ctx context.Context, b chain.Block)
+// Tap observes unfiltered blocks. It must be idempotent for a block.
+type Tap func(ctx context.Context, b chain.Block) error
 
 func (c Config) chainName() string {
 	if c.Chain == "" {
@@ -316,19 +318,14 @@ func (l *Listener) process(ctx context.Context, b chain.Block, persist bool) err
 		}
 	}
 	if persist {
+		if err := l.runTaps(ctx, b); err != nil {
+			return err
+		}
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		err := l.store.Save(sctx, cursor.State{LastBlock: b.Number, UpdatedAt: time.Now().UTC()})
 		cancel()
 		if err != nil {
 			return fmt.Errorf("save cursor: %w", err)
-		}
-		// Taps (large-transfer channel, notify bot) run only once the block
-		// is committed: a block retried because a sink failed, or replayed
-		// after a restart before its cursor was saved, is tapped exactly
-		// once. Taps only enqueue, so a crash right here can lose (never
-		// duplicate) their messages.
-		for _, tap := range l.cfg.Taps {
-			tap(ctx, b)
 		}
 	}
 	l.progress(b.Number)
@@ -337,6 +334,30 @@ func (l *Listener) process(ctx context.Context, b chain.Block, persist bool) err
 		l.m.LastProcessedTime.SetToCurrentTime()
 	}
 	l.log.Debug("block processed", "block", b.Number, "txs", b.TxCount, "transfers", len(b.Transfers), "matched", len(matched))
+	return nil
+}
+
+// runTaps records block b in every tap, retrying failures until they
+// succeed or ctx is done (the cursor must not pass an unrecorded block).
+func (l *Listener) runTaps(ctx context.Context, b chain.Block) error {
+	for _, tap := range l.cfg.Taps {
+		for attempt := 0; ; attempt++ {
+			tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.cfg.DispatchTimeout)
+			err := tap(tctx, b)
+			cancel()
+			if err == nil {
+				break
+			}
+			if l.m != nil {
+				l.m.DispatchRetries.Inc()
+			}
+			l.fail(err)
+			l.log.Error("tap failed, retrying block", "block", b.Number, "attempt", attempt+1, "err", err)
+			if err := retry.Sleep(ctx, l.cfg.Backoff.Delay(attempt)); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
