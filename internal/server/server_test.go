@@ -45,6 +45,12 @@ func TestServerEndpoints(t *testing.T) {
 	if code, body := get("/healthz"); code != 503 || !strings.Contains(body, `"ok":false`) {
 		t.Fatalf("unhealthy: %d %s", code, body)
 	}
+	// Liveness and readiness do not depend on processing health.
+	for _, p := range []string{"/livez", "/readyz"} {
+		if code, body := get(p); code != 200 || !strings.Contains(body, `"ok":true`) {
+			t.Fatalf("%s while unhealthy: %d %s", p, code, body)
+		}
+	}
 	if code, body := get("/metrics"); code != 200 || !strings.Contains(body, "my_metric 1") {
 		t.Fatalf("metrics: %d %s", code, body)
 	}

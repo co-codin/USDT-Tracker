@@ -168,18 +168,28 @@ serviceMonitor:
   labels: {}
 
 # --- Probes -------------------------------------------------------------------
-# /healthz returns 503 when no block was processed for http.health_stale_after
-# (2m) on any enabled chain, e.g. TRON node / toncenter or DB unreachable. Liveness is lenient so a remote
-# outage does not cause a restart storm.
+# /livez: process up. /readyz: start-up (incl. migrations) done; NOT tied to
+# upstream nodes, so a TronGrid/toncenter/RPC outage keeps the pod in its
+# Service and /metrics + /v1 stay reachable. /healthz returns 503 when no block
+# was processed for http.health_stale_after (2m) on any chain or the DB is
+# unreachable; liveness uses it leniently (10 × 30s) so a remote outage does
+# not cause a restart storm – alert on it instead (see README "Monitoring").
+# startupProbe gives long migrations (e.g. index builds on a big table) up to
+# 10 minutes before liveness starts counting.
+startupProbe:
+  httpGet: {path: /livez, port: http}
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 60
 livenessProbe:
   httpGet: {path: /healthz, port: http}
-  initialDelaySeconds: 15
+  initialDelaySeconds: 0
   periodSeconds: 30
   timeoutSeconds: 5
   failureThreshold: 10
 readinessProbe:
-  httpGet: {path: /healthz, port: http}
-  initialDelaySeconds: 5
+  httpGet: {path: /readyz, port: http}
+  initialDelaySeconds: 2
   periodSeconds: 10
   timeoutSeconds: 3
   failureThreshold: 3

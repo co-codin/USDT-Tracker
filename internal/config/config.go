@@ -176,6 +176,9 @@ type Filter struct {
 type HTTP struct {
 	Addr       string   `yaml:"addr"` // empty disables the server
 	StaleAfter Duration `yaml:"health_stale_after"`
+	// HealthDetails includes raw upstream error messages in /healthz
+	// (off by default: they can reveal hosts or provider details).
+	HealthDetails bool `yaml:"health_details"`
 }
 
 // Sinks groups all sink configs.
@@ -728,6 +731,7 @@ var envBindings = []envBinding{
 	{"NOTIFY_MAX_TOTAL_SUBS", intVal(func(c *Config) *int { return &c.NotifyBot.MaxTotalSubs })},
 	{"NOTIFY_COMMANDS_PER_MINUTE", intVal(func(c *Config) *int { return &c.NotifyBot.CommandsPerMinute })},
 	{"NOTIFY_MIN_AMOUNT", str(func(c *Config) *string { return &c.NotifyBot.MinAmount })},
+	{"HTTP_HEALTH_DETAILS", boolean(func(c *Config) *bool { return &c.HTTP.HealthDetails })},
 	{"SINK_POSTGRES_ENABLED", boolean(func(c *Config) *bool { return &c.Sinks.Postgres.Enabled })},
 	{"DATABASE_URL", str(func(c *Config) *string { return &c.Sinks.Postgres.DSN })},
 }

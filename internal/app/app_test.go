@@ -548,6 +548,9 @@ func TestE2E_UnhealthyWhenNodeDown(t *testing.T) {
 					if !strings.Contains(string(b), "last_error") {
 						t.Errorf("503 body should include last_error: %s", b)
 					}
+					if strings.Contains(string(b), "127.0.0.1") || strings.Contains(string(b), "refused") {
+						t.Errorf("/healthz leaks raw upstream errors: %s", b)
+					}
 					return
 				}
 			}

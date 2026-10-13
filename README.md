@@ -200,7 +200,7 @@ For TON add `CHAINS=tron,ton` (or `ton`) and `TONCENTER_API_KEY` to `.env`.
 The chart lives in [`deploy/helm/usdt-tracker`](deploy/helm/usdt-tracker). It deploys the app image
 (single replica, `Recreate` strategy – the listener is a single writer), a Service on port `9090`
 (`/metrics`, `/healthz`, `/v1/addresses`), optional Ingress (only `/v1` by default) and
-ServiceMonitor, liveness/readiness probes on `/healthz`, resource requests/limits, and a non-root,
+ServiceMonitor, startup/readiness/liveness probes on `/livez`, `/readyz` and `/healthz`, resource requests/limits, and a non-root,
 read-only-root-filesystem pod. By default it also installs PostgreSQL via the Bitnami subchart.
 
 ```bash
@@ -284,6 +284,7 @@ See [`config.example.yaml`](config.example.yaml) for every option with comments.
 | `http.addr` | `HTTP_ADDR` | `:9090` | `/metrics`, `/healthz`, admin API; empty disables |
 | `api.token` | `API_TOKEN` | – | Bearer token for `/v1/*` (≥ 16 chars); **empty disables the admin API** |
 | `http.health_stale_after` | – | `2m` | `/healthz` → 503 without progress |
+| `http.health_details` | `HTTP_HEALTH_DETAILS` | `false` | include raw upstream/DB error text in `/healthz` |
 | `sinks.stdout.enabled` | `SINK_STDOUT_ENABLED` | `true` | |
 | `sinks.webhook.enabled` | `SINK_WEBHOOK_ENABLED` | `false` | |
 | `sinks.webhook.url` / `.secret` | `WEBHOOK_URL` / `WEBHOOK_SECRET` | – | |
@@ -679,15 +680,31 @@ The table keeps its historical name `trc20_transfers` for compatibility; filter 
 `GET /healthz` → `200 {"ok":true,"status":{"head":…,"safe_head":…,"cursor":…,"lag":…}}`, or `503`
 when no progress was made for `health_stale_after` (node unreachable, sink stuck, DB down).
 With several chains the status is per chain: `{"ok":true,"status":{"chains":{"tron":{…},"ton":{…}}}}`
-and `ok` is false if any chain is stalled.
+and `ok` is false if any chain is stalled. Raw upstream / Postgres error messages are not returned
+(they can reveal hosts or users): `last_error` only says that an error occurred, details are in the
+logs; set `HTTP_HEALTH_DETAILS=true` (`http.health_details`) to include them.
 The Docker image uses `listener -healthcheck` (no curl in distroless).
+
+| Endpoint | Meaning | Used by |
+|---|---|---|
+| `GET /livez` | process is serving HTTP | Helm `startupProbe` |
+| `GET /readyz` | start-up and migrations finished; **not** tied to upstream nodes | Helm `readinessProbe` (an RPC outage keeps `/metrics` and `/v1` reachable) |
+| `GET /healthz` | blocks are being processed and Postgres answers | Docker `HEALTHCHECK`, lenient Helm `livenessProbe`, alerting |
+
+Suggested Prometheus alert (stalled chain):
+
+```yaml
+- alert: UsdtTrackerStalled
+  expr: time() - tron_listener_last_processed_timestamp_seconds > 300
+  for: 5m
+```
 
 Selected metrics (`tron_listener_*`, name kept for compatibility; per-chain ones carry a `chain`
 label, `tron`, `ton` or `eth`): `head_block`, `safe_head_block`, `cursor_block`, `lag_blocks`,
 `blocks_processed_total`, `transfers_decoded_total`, `transfers_matched_total{chain,reason}`,
 `rpc_requests_total{chain,endpoint,status}`, `rpc_request_duration_seconds`, `rpc_retries_total{chain,endpoint,reason}`,
 `sink_deliveries_total{sink,status}`, `sink_delivery_duration_seconds`, `dispatch_retries_total`,
-`decode_errors_total`, `block_fetch_errors_total`, `large_transfer_alerts_total{status}`.
+`decode_errors_total`, `block_fetch_errors_total`, `reorgs_detected_total`, `large_transfer_alerts_total{status}`.
 
 ## Testing
 

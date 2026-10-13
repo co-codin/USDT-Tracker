@@ -145,7 +145,7 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		"LARGE_ALERTS_ENABLED": "true", "LARGE_ALERTS_BOT_TOKEN": "lb", "LARGE_ALERTS_CHAT_ID": "@whales",
 		"LARGE_ALERTS_THRESHOLD": "250000", "LARGE_ALERTS_INTERVAL": "4s", "LARGE_ALERTS_FOOTER": "via x",
 		"NOTIFY_BOT_ENABLED": "true", "TELEGRAM_NOTIFY_BOT_TOKEN": "nb", "NOTIFY_FREE_LIMIT": "2", "NOTIFY_PREMIUM_LIMIT": "20",
-		"NOTIFY_MIN_AMOUNT": "1", "NOTIFY_MAX_USERS": "7", "NOTIFY_MAX_TOTAL_SUBS": "8", "NOTIFY_COMMANDS_PER_MINUTE": "9",
+		"NOTIFY_MIN_AMOUNT": "1", "NOTIFY_MAX_USERS": "7", "NOTIFY_MAX_TOTAL_SUBS": "8", "NOTIFY_COMMANDS_PER_MINUTE": "9", "HTTP_HEALTH_DETAILS": "true",
 	}
 	if len(e) != len(EnvVars()) {
 		t.Fatalf("test covers %d env vars, config supports %d", len(e), len(EnvVars()))
@@ -176,7 +176,7 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		c.Alerts.LargeTransfers.Threshold == "250000", c.Alerts.LargeTransfers.Interval.D() == 4*time.Second,
 		c.Alerts.LargeTransfers.Footer == "via x",
 		c.NotifyBot.Enabled, c.NotifyBot.BotToken == "nb", c.NotifyBot.FreeLimit == 2, c.NotifyBot.PremiumLimit == 20,
-		c.NotifyBot.MinAmount == "1", c.NotifyBot.MaxUsers == 7, c.NotifyBot.MaxTotalSubs == 8, c.NotifyBot.CommandsPerMinute == 9,
+		c.NotifyBot.MinAmount == "1", c.NotifyBot.MaxUsers == 7, c.NotifyBot.MaxTotalSubs == 8, c.NotifyBot.CommandsPerMinute == 9, c.HTTP.HealthDetails,
 	}
 	for i, ok := range checks {
 		if !ok {

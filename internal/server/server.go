@@ -1,5 +1,13 @@
-// Package server exposes /metrics and /healthz, plus any extra handlers
-// mounted with Handle (e.g. the admin API under /v1/).
+// Package server exposes /metrics, /livez, /readyz and /healthz, plus any
+// extra handlers mounted with Handle (e.g. the admin API under /v1/).
+//
+//   - /livez  – the process serves HTTP (liveness / startup probes).
+//   - /readyz – start-up finished (config loaded, migrations applied); not
+//     tied to upstream nodes, so an RPC outage never removes the pod from
+//     its Service (the admin API and /metrics stay reachable).
+//   - /healthz – processing health: 503 when a chain made no progress for
+//     health_stale_after or Postgres is unreachable (alerting, Docker
+//     HEALTHCHECK, lenient liveness).
 package server
 
 import (
@@ -31,6 +39,14 @@ func New(addr string, metrics http.Handler, health HealthFunc, log *slog.Logger)
 	if metrics != nil {
 		mux.Handle("GET /metrics", metrics)
 	}
+	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}` + "\n"))
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}` + "\n"))
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		ok, detail := health(r.Context())
 		w.Header().Set("Content-Type", "application/json")

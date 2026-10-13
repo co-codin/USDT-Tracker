@@ -407,6 +407,9 @@ func (a *App) health(ctx context.Context) (bool, any) {
 		if time.Since(st.LastProgressAt) > a.cfg.HTTP.StaleAfter.D() {
 			ok = false
 		}
+		if st.LastError != "" && !a.cfg.HTTP.HealthDetails {
+			st.LastError = "error (details in the logs; set HTTP_HEALTH_DETAILS=true to show here)"
+		}
 		statuses[p.Chain] = st
 	}
 	var pgErr string
@@ -415,7 +418,9 @@ func (a *App) health(ctx context.Context) (bool, any) {
 		defer cancel()
 		if err := a.pg.Ping(pctx); err != nil {
 			ok = false
-			pgErr = "postgres: " + err.Error()
+			// Driver errors can name hosts/users: details go to the log only.
+			a.log.Warn("health: postgres ping failed", "err", err)
+			pgErr = "postgres: unavailable"
 		}
 	}
 	if len(a.Pipelines) == 1 { // unchanged single-chain shape
