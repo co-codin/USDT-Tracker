@@ -151,7 +151,7 @@ Dockerfile, docker-compose.yml
 ## Quick start
 
 Prebuilt binaries are on the [releases page](https://github.com/co-codin/USDT-Tracker/releases);
-the image is `docker pull ghcr.io/co-codin/usdt-tracker:v0.2.0` (linux/amd64, linux/arm64).
+the image is `docker pull ghcr.io/co-codin/usdt-tracker:v0.3.0` (linux/amd64, linux/arm64).
 
 ### Local (Go 1.26+)
 
@@ -211,7 +211,7 @@ ServiceMonitor, startup/readiness/liveness probes on `/livez`, `/readyz` and `/h
 read-only-root-filesystem pod. By default it also installs PostgreSQL via the Bitnami subchart.
 
 ```bash
-# 1. Image: the chart uses the released multi-arch ghcr.io/co-codin/usdt-tracker:v0.2.0.
+# 1. Image: the chart uses the released multi-arch ghcr.io/co-codin/usdt-tracker:v0.3.0.
 #    (Own build: docker build -t <registry>/usdt-tracker:<tag> . and set image.repository/tag.)
 
 # 2. Install with the bundled Postgres and the admin API enabled

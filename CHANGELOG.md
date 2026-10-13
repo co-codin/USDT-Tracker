@@ -6,6 +6,8 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-13
+
 ### Added
 
 - `chains:` as a mapping of per-chain blocks (`chains.tron`, `chains.ton`, `chains.eth`, with
@@ -83,5 +85,6 @@ All notable changes are documented here. The format follows
 - Initial release: TRON TRC-20, TON jetton and Ethereum ERC-20 USDT listener with stdout, webhook,
   Telegram and PostgreSQL sinks, watch-list API, CSV export, notify bot and Helm chart.
 
-[Unreleased]: https://github.com/co-codin/USDT-Tracker/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/co-codin/USDT-Tracker/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/co-codin/USDT-Tracker/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/co-codin/USDT-Tracker/releases/tag/v0.2.0
