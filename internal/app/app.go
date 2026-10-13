@@ -281,9 +281,11 @@ func (a *App) buildSource(c string) (chain.Source, error) {
 		})
 		// The RPC URL may embed a provider key: log only scheme://host.
 		log.Info("eth source", "rpc", eth.RedactURL(cfg.ETH.RPCURL), "token", cfg.ETH.Symbol,
-			"contract", eth.Checksum(contract), "log_chunk", cfg.ETH.LogChunk)
+			"contract", eth.Checksum(contract), "log_chunk", cfg.ETH.LogChunk, "head_tag", cfg.ETH.HeadTag)
 		return erc20.NewSource(client, erc20.Token{Contract: contract, Symbol: cfg.ETH.Symbol, Decimals: cfg.ETH.Decimals},
-			cfg.ETH.LogChunk, log.With("chain", c), cm.DecodeErrors.Inc), nil
+			cfg.ETH.LogChunk, log.With("chain", c), erc20.Options{
+				HeadTag: eth.HeadTag(cfg.ETH.HeadTag), OnDecodeError: cm.DecodeErrors.Inc, OnReorg: cm.ReorgsDetected.Inc,
+			}), nil
 	default:
 		return nil, fmt.Errorf("unknown chain %q", c)
 	}

@@ -74,6 +74,7 @@ eth:
   start_block: 0             # same semantics as listener.start_block
   batch_size: 50             # blocks processed per iteration
   log_chunk: 50              # max blocks per eth_getLogs call; halved automatically if the node refuses
+  head_tag: latest      # latest (minus confirmations) | safe | finalized
   cursor_file: ./data/cursor-eth.json   # with postgres the cursor is "<cursor_name>:eth"
 
 filter:

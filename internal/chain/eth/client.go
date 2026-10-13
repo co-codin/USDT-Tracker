@@ -210,6 +210,157 @@ func (c *Client) BlockTime(ctx context.Context, num int64) (time.Time, error) {
 	return time.Unix(ts, 0).UTC(), nil
 }
 
+// Header is the subset of an eth_getBlockByNumber result we use.
+type Header struct {
+	Number     string `json:"number"`
+	Hash       string `json:"hash"`
+	ParentHash string `json:"parentHash"`
+	Timestamp  string `json:"timestamp"`
+}
+
+// HeadTag selects which block eth_getBlockByNumber treats as the head.
+type HeadTag string
+
+// Head tags. "latest" is the newest block (use confirmations); "safe" and
+// "finalized" are the post-merge consensus checkpoints (finalized blocks
+// cannot be reorged without slashing ~1/3 of stake).
+const (
+	HeadLatest    HeadTag = "latest"
+	HeadSafe      HeadTag = "safe"
+	HeadFinalized HeadTag = "finalized"
+)
+
+// HeaderByTag returns the block number of a head tag (latest/safe/finalized).
+func (c *Client) HeaderByTag(ctx context.Context, tag HeadTag) (int64, error) {
+	if tag == "" || tag == HeadLatest {
+		return c.BlockNumber(ctx)
+	}
+	var hdr *Header
+	if err := c.call(ctx, "eth_getBlockByNumber", []any{string(tag), false}, &hdr); err != nil {
+		return 0, err
+	}
+	if hdr == nil {
+		return 0, fmt.Errorf("eth_getBlockByNumber %s: block not found", tag)
+	}
+	return ParseQuantity(hdr.Number)
+}
+
+// HeaderByNumber returns the header of block num, or nil if the node does
+// not have it.
+func (c *Client) HeaderByNumber(ctx context.Context, num int64) (*Header, error) {
+	var hdr *Header
+	if err := c.call(ctx, "eth_getBlockByNumber", []any{Quantity(num), false}, &hdr); err != nil {
+		return nil, err
+	}
+	return hdr, nil
+}
+
+// ErrBatchUnsupported means the endpoint rejected a JSON-RPC batch request.
+var ErrBatchUnsupported = errors.New("eth: JSON-RPC batch requests not supported")
+
+// LogsWithHeaders fetches eth_getLogs for f and the headers of every block in
+// [f.FromBlock, f.ToBlock] in ONE JSON-RPC batch, so both answers come from
+// the same backend. A nil header means that backend does not have the block
+// yet (a lagging node); callers must then treat the empty log result as
+// untrustworthy. Returns ErrBatchUnsupported (permanent) when the endpoint
+// refuses batches.
+func (c *Client) LogsWithHeaders(ctx context.Context, f LogFilter) ([]Log, []*Header, error) {
+	var logs []Log
+	var hdrs []*Header
+	err := retry.Do(ctx, c.attempts, c.backoff, func(ctx context.Context) error {
+		var err error
+		logs, hdrs, err = c.batchOnce(ctx, f)
+		return err
+	}, func(attempt int, delay time.Duration, err error) {
+		if c.obs != nil {
+			c.obs.ObserveRetry("eth_getLogs+headers", "error")
+		}
+		c.log.Warn("eth rpc retry", "method", "eth_getLogs+headers", "attempt", attempt, "delay", delay.String(), "err", err)
+	})
+	return logs, hdrs, err
+}
+
+func (c *Client) batchOnce(ctx context.Context, f LogFilter) ([]Log, []*Header, error) {
+	topics := make([]any, len(f.Topics))
+	for i, t := range f.Topics {
+		topics[i] = t
+	}
+	n := int(f.ToBlock - f.FromBlock + 1)
+	reqs := make([]rpcRequest, 0, n+1)
+	logsID := c.id.Add(1)
+	reqs = append(reqs, rpcRequest{JSONRPC: "2.0", ID: logsID, Method: "eth_getLogs", Params: []any{map[string]any{
+		"fromBlock": Quantity(f.FromBlock), "toBlock": Quantity(f.ToBlock), "address": f.Address, "topics": topics,
+	}}})
+	ids := make(map[int64]int, n) // request id -> header index
+	for i := 0; i < n; i++ {
+		id := c.id.Add(1)
+		ids[id] = i
+		reqs = append(reqs, rpcRequest{JSONRPC: "2.0", ID: id, Method: "eth_getBlockByNumber", Params: []any{Quantity(f.FromBlock + int64(i)), false}})
+	}
+	body, err := json.Marshal(reqs)
+	if err != nil {
+		return nil, nil, retry.Permanent(err)
+	}
+	raw, err := c.post(ctx, "eth_getLogs+headers", body)
+	if err != nil {
+		return nil, nil, err
+	}
+	var resps []rpcResponse
+	if err := json.Unmarshal(raw, &resps); err != nil {
+		var single rpcResponse
+		if json.Unmarshal(raw, &single) == nil && single.Error != nil {
+			single.Error.Method = "batch"
+			if cerr := classifyRPCError("batch", single.Error); !retry.IsPermanent(cerr) {
+				return nil, nil, cerr
+			}
+			return nil, nil, retry.Permanent(fmt.Errorf("%w: %w", ErrBatchUnsupported, single.Error))
+		}
+		return nil, nil, fmt.Errorf("eth batch: decode response: %w", err)
+	}
+	var logs []Log
+	gotLogs := false
+	hdrs := make([]*Header, n)
+	seen := make([]bool, n)
+	for _, r := range resps {
+		var id int64
+		if err := json.Unmarshal(r.ID, &id); err != nil {
+			return nil, nil, fmt.Errorf("eth batch: bad response id %s", r.ID)
+		}
+		method := "eth_getBlockByNumber"
+		if id == logsID {
+			method = "eth_getLogs"
+		}
+		if r.Error != nil {
+			r.Error.Method = method
+			return nil, nil, classifyRPCError(method, r.Error)
+		}
+		if id == logsID {
+			if err := json.Unmarshal(r.Result, &logs); err != nil {
+				return nil, nil, fmt.Errorf("eth_getLogs: decode result: %w", err)
+			}
+			gotLogs = true
+			continue
+		}
+		i, ok := ids[id]
+		if !ok {
+			return nil, nil, fmt.Errorf("eth batch: unexpected response id %d", id)
+		}
+		if err := json.Unmarshal(r.Result, &hdrs[i]); err != nil {
+			return nil, nil, fmt.Errorf("eth_getBlockByNumber: decode result: %w", err)
+		}
+		seen[i] = true
+	}
+	if !gotLogs {
+		return nil, nil, fmt.Errorf("eth batch: eth_getLogs response missing")
+	}
+	for i, ok := range seen {
+		if !ok {
+			return nil, nil, fmt.Errorf("eth batch: header %d response missing", f.FromBlock+int64(i))
+		}
+	}
+	return logs, hdrs, nil
+}
+
 // Quantity encodes n as a JSON-RPC hex quantity.
 func Quantity(n int64) string { return "0x" + strconv.FormatInt(n, 16) }
 
@@ -255,60 +406,19 @@ type rpcRequest struct {
 }
 
 type rpcResponse struct {
+	ID     json.RawMessage `json:"id"`
 	Result json.RawMessage `json:"result"`
 	Error  *RPCError       `json:"error"`
 }
 
 func (c *Client) doOnce(ctx context.Context, method string, params []any, out any) error {
-	if err := c.limiter.Wait(ctx); err != nil {
-		return retry.Permanent(err)
-	}
 	body, err := json.Marshal(rpcRequest{JSONRPC: "2.0", ID: c.id.Add(1), Method: method, Params: params})
 	if err != nil {
 		return retry.Permanent(err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
+	raw, err := c.post(ctx, method, body)
 	if err != nil {
-		return retry.Permanent(errors.New("eth: invalid rpc url"))
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", c.ua)
-	start := time.Now()
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		c.observe(method, "network_error", start)
-		if ctx.Err() != nil {
-			return retry.Permanent(ctx.Err())
-		}
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err // the URL may contain an API key: keep it out of logs
-		}
-		return fmt.Errorf("eth %s: %w", method, err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	c.observe(method, strconv.Itoa(resp.StatusCode), start)
-	if err != nil {
-		return fmt.Errorf("eth %s: read body: %w", method, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		he := &HTTPError{Method: method, StatusCode: resp.StatusCode, Body: truncate(string(raw), 300)}
-		he.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
-		switch {
-		case resp.StatusCode == http.StatusTooManyRequests:
-			if he.retryAfter == 0 {
-				he.retryAfter = time.Second
-			}
-			return he
-		case resp.StatusCode == http.StatusRequestEntityTooLarge && method == "eth_getLogs":
-			return retry.Permanent(fmt.Errorf("%w: %w", ErrRangeTooLarge, he))
-		case resp.StatusCode >= 500, resp.StatusCode == http.StatusRequestTimeout:
-			return he
-		default:
-			return retry.Permanent(he)
-		}
+		return err
 	}
 	var r rpcResponse
 	if err := json.Unmarshal(raw, &r); err != nil {
@@ -322,6 +432,58 @@ func (c *Client) doOnce(ctx context.Context, method string, params []any, out an
 		return fmt.Errorf("eth %s: decode result: %w", method, err)
 	}
 	return nil
+}
+
+// post sends one JSON-RPC HTTP request (single call or batch) and returns
+// the raw 2xx body. label names the call in errors and metrics.
+func (c *Client) post(ctx context.Context, label string, body []byte) ([]byte, error) {
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, retry.Permanent(err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
+	if err != nil {
+		return nil, retry.Permanent(errors.New("eth: invalid rpc url"))
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", c.ua)
+	start := time.Now()
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		c.observe(label, "network_error", start)
+		if ctx.Err() != nil {
+			return nil, retry.Permanent(ctx.Err())
+		}
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err // the URL may contain an API key: keep it out of logs
+		}
+		return nil, fmt.Errorf("eth %s: %w", label, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	c.observe(label, strconv.Itoa(resp.StatusCode), start)
+	if err != nil {
+		return nil, fmt.Errorf("eth %s: read body: %w", label, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		he := &HTTPError{Method: label, StatusCode: resp.StatusCode, Body: truncate(string(raw), 300)}
+		he.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests:
+			if he.retryAfter == 0 {
+				he.retryAfter = time.Second
+			}
+			return nil, he
+		case resp.StatusCode == http.StatusRequestEntityTooLarge && strings.HasPrefix(label, "eth_getLogs"):
+			return nil, retry.Permanent(fmt.Errorf("%w: %w", ErrRangeTooLarge, he))
+		case resp.StatusCode >= 500, resp.StatusCode == http.StatusRequestTimeout:
+			return nil, he
+		default:
+			return nil, retry.Permanent(he)
+		}
+	}
+	return raw, nil
 }
 
 // classifyRPCError maps provider-specific JSON-RPC errors: range/result

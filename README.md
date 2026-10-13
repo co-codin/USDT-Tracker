@@ -228,6 +228,8 @@ yourself and reference it – recommended with GitOps / sealed-secrets / externa
 kubectl -n usdt create secret generic usdt-secrets \
   --from-literal=API_TOKEN="$(openssl rand -hex 32)" --from-literal=TRON_PRO_API_KEY=...
 helm upgrade --install usdt deploy/helm/usdt-tracker -n usdt --set secrets.existingSecret=usdt-secrets
+# if usdt-secrets also holds DATABASE_URL (external DB):
+#   --set postgresql.enabled=false --set secrets.existingSecretHasDatabaseUrl=true
 ```
 
 Recognised keys: `API_TOKEN`, `TRON_PRO_API_KEY`, `TONCENTER_API_KEY`, `TELEGRAM_BOT_TOKEN`,
@@ -312,6 +314,7 @@ See [`config.example.yaml`](config.example.yaml) for every option with comments.
 | `eth.poll_interval` | `ETH_POLL_INTERVAL` | `6s` | |
 | `eth.batch_size` | `ETH_BATCH_SIZE` | `50` | Blocks per iteration |
 | `eth.log_chunk` | `ETH_LOG_CHUNK` | `50` | Max blocks per `eth_getLogs` call; halved automatically when the node refuses a range |
+| `eth.head_tag` | `ETH_HEAD_TAG` | `latest` | Head block: `latest` (minus `ETH_CONFIRMATIONS`), `safe` or `finalized` (reorg-proof, ~13 min behind; use with `ETH_CONFIRMATIONS=0`). Logs and block headers are fetched in one JSON-RPC batch and hash-checked, so a lagging RPC backend cannot make blocks look empty; a reorg deeper than the confirmations is logged and counted in `reorgs_detected_total` |
 | `eth.cursor_file` | `ETH_CURSOR_FILE` | `./data/cursor-eth.json` | With Postgres: cursor row `<cursor_name>:eth` |
 
 `filter.direction`, `filter.min_amount` and `filter.mode` apply to both chains; `filter.watch_addresses`

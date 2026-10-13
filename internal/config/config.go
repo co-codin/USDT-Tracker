@@ -126,6 +126,10 @@ type ETH struct {
 	StartBlock     int64    `yaml:"start_block"`
 	// BatchSize is the number of blocks processed per iteration.
 	BatchSize int `yaml:"batch_size"`
+	// HeadTag selects the head block: "latest" (default, then minus
+	// Confirmations), "safe" or "finalized" (reorg-proof; ~13 min behind,
+	// use with confirmations 0).
+	HeadTag string `yaml:"head_tag"`
 	// LogChunk is the max block range per eth_getLogs call (halved
 	// automatically when the node rejects a range).
 	LogChunk int `yaml:"log_chunk"`
@@ -272,7 +276,7 @@ func Default() Config {
 		ETH: ETH{
 			RPCURL: eth.DefaultRPCURL, Timeout: Duration(20 * time.Second), RPS: 5, MaxRetries: 8,
 			Contract: eth.USDTContract, Symbol: "USDT", Decimals: 6,
-			Confirmations: 12, PollInterval: Duration(6 * time.Second), BatchSize: 50, LogChunk: 50,
+			Confirmations: 12, PollInterval: Duration(6 * time.Second), BatchSize: 50, LogChunk: 50, HeadTag: "latest",
 			CursorFile: "./data/cursor-eth.json",
 		},
 		Token: Token{
@@ -522,6 +526,11 @@ func (c *Config) validateETH(add func(string, ...any)) {
 	if e.BatchSize < 1 || e.BatchSize > 5000 {
 		add("eth.batch_size must be between 1 and 5000")
 	}
+	switch e.HeadTag {
+	case "latest", "safe", "finalized":
+	default:
+		add("eth.head_tag must be latest, safe or finalized (ETH_HEAD_TAG)")
+	}
 	if e.LogChunk < 1 || e.LogChunk > 5000 {
 		add("eth.log_chunk must be between 1 and 5000")
 	}
@@ -669,6 +678,7 @@ var envBindings = []envBinding{
 	{"ETH_POLL_INTERVAL", duration(func(c *Config) *Duration { return &c.ETH.PollInterval })},
 	{"ETH_BATCH_SIZE", intVal(func(c *Config) *int { return &c.ETH.BatchSize })},
 	{"ETH_LOG_CHUNK", intVal(func(c *Config) *int { return &c.ETH.LogChunk })},
+	{"ETH_HEAD_TAG", str(func(c *Config) *string { return &c.ETH.HeadTag })},
 	{"ETH_CURSOR_FILE", str(func(c *Config) *string { return &c.ETH.CursorFile })},
 	{"TOKEN_CONTRACT", str(func(c *Config) *string { return &c.Token.Contract })},
 	{"LISTENER_CONFIRMATIONS", integer(func(c *Config) *int64 { return &c.Listener.Confirmations })},

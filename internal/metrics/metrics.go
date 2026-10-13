@@ -33,6 +33,7 @@ type Metrics struct {
 	RPCDuration       *prometheus.HistogramVec
 	RPCRetries        *prometheus.CounterVec
 	LastProcessedTime *prometheus.GaugeVec
+	ReorgsDetected    *prometheus.CounterVec
 
 	SinkDeliveries *prometheus.CounterVec
 	SinkTransfers  *prometheus.CounterVec
@@ -55,6 +56,7 @@ type Chain struct {
 	BlockErrors       prometheus.Counter
 	DispatchRetries   prometheus.Counter
 	LastProcessedTime prometheus.Gauge
+	ReorgsDetected    prometheus.Counter
 	m                 *Metrics
 }
 
@@ -74,6 +76,7 @@ func (m *Metrics) For(chain string) *Chain {
 		BlockErrors:       m.BlockErrors.With(l),
 		DispatchRetries:   m.DispatchRetries.With(l),
 		LastProcessedTime: m.LastProcessedTime.With(l),
+		ReorgsDetected:    m.ReorgsDetected.With(l),
 		m:                 m,
 	}
 }
@@ -106,6 +109,7 @@ func New() *Metrics {
 	m.TransfersDecoded = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: ns, Name: "transfers_decoded_total", Help: "Token transfers decoded (before filtering)."}, ch)
 	m.TransfersMatched = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: ns, Name: "transfers_matched_total", Help: "Transfers matched by the filter, by chain and reason."}, []string{"chain", "reason"})
 	m.DecodeErrors = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: ns, Name: "decode_errors_total", Help: "Malformed token logs / transfer items skipped."}, ch)
+	m.ReorgsDetected = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: ns, Name: "reorgs_detected_total", Help: "Chain reorganisations deeper than the confirmation depth (already delivered transfers may be stale)."}, ch)
 	m.BlockErrors = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: ns, Name: "block_fetch_errors_total", Help: "Block fetches that failed after retries."}, ch)
 	m.DispatchRetries = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: ns, Name: "dispatch_retries_total", Help: "Block deliveries retried because a required sink failed."}, ch)
 	m.RPCRequests = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: ns, Name: "rpc_requests_total", Help: "Chain API requests by chain, endpoint and status."}, []string{"chain", "endpoint", "status"})
@@ -118,7 +122,7 @@ func New() *Metrics {
 	m.LargeAlerts = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: ns, Name: "large_transfer_alerts_total", Help: "Large-transfer channel alerts by status (sent|failed|dropped)."}, []string{"status"})
 
 	for _, c := range []prometheus.Collector{m.LargeAlerts, m.HeadBlock, m.SafeHeadBlock, m.CursorBlock, m.LagBlocks, m.LastProcessedTime,
-		m.BlocksProcessed, m.TransfersDecoded, m.TransfersMatched, m.DecodeErrors, m.BlockErrors, m.DispatchRetries,
+		m.BlocksProcessed, m.TransfersDecoded, m.TransfersMatched, m.DecodeErrors, m.BlockErrors, m.DispatchRetries, m.ReorgsDetected,
 		m.RPCRequests, m.RPCDuration, m.RPCRetries, m.SinkDeliveries, m.SinkTransfers, m.SinkDuration} {
 		f(c)
 	}
