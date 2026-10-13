@@ -3,9 +3,9 @@
 # file, or reference an existing Kubernetes Secret (secrets.existingSecret).
 
 image:
-  # Placeholder: build and push the repo's Dockerfile, then override.
+  # Published by the release workflow (linux/amd64, linux/arm64).
   repository: ghcr.io/co-codin/usdt-tracker
-  tag: latest            # pin an immutable tag (or digest) in production
+  tag: v0.2.0            # defaults to the chart appVersion release; pin a digest in production
   digest: ""             # e.g. sha256:...; wins over tag when set
   pullPolicy: IfNotPresent
 
