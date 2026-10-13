@@ -23,12 +23,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/co-codin/USDT-Tracker/internal/apierr"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/co-codin/USDT-Tracker/internal/apierr"
 )
 
 // MaxBodyBytes caps request bodies.

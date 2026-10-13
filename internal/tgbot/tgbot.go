@@ -10,11 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/co-codin/USDT-Tracker/internal/httpx"
 
 	"github.com/co-codin/USDT-Tracker/internal/retry"
 )
@@ -55,7 +56,7 @@ func New(o Options) (*Client, error) {
 	}
 	hc := o.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: 70 * time.Second} // > long-poll timeout
+		hc = httpx.NewClient(70 * time.Second) // > long-poll timeout
 	}
 	return &Client{base: strings.TrimRight(o.APIBase, "/") + "/bot" + o.Token, hc: hc, attempts: o.MaxRetries, backoff: o.Backoff}, nil
 }
@@ -160,8 +161,7 @@ func (c *Client) call(ctx context.Context, method string, params, out any, attem
 			}
 			return fmt.Errorf("telegram %s: %w", method, err)
 		}
-		defer resp.Body.Close()
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		raw, _ := httpx.ReadBody(resp, 8<<20)
 		var r response
 		_ = json.Unmarshal(raw, &r)
 		if resp.StatusCode == http.StatusOK && r.OK {

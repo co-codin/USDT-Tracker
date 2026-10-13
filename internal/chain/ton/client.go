@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/co-codin/USDT-Tracker/internal/httpx"
 
 	"golang.org/x/time/rate"
 
@@ -88,7 +89,7 @@ func NewClient(o Options) *Client {
 	}
 	hc := o.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: o.Timeout}
+		hc = httpx.NewClient(o.Timeout)
 	}
 	return &Client{
 		base: strings.TrimRight(o.BaseURL, "/"), apiKey: o.APIKey, ua: o.UserAgent, hc: hc,
@@ -206,8 +207,7 @@ func (c *Client) doOnce(ctx context.Context, path string, q url.Values, out any)
 		}
 		return fmt.Errorf("ton %s: %w", path, err)
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	body, err := httpx.ReadBody(resp, maxResponseBytes)
 	c.observe(path, strconv.Itoa(resp.StatusCode), start)
 	if err != nil {
 		return fmt.Errorf("ton %s: read body: %w", path, err)

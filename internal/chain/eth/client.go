@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -91,7 +90,7 @@ func NewClient(o Options) *Client {
 	}
 	hc := o.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: o.Timeout}
+		hc = httpx.NewClient(o.Timeout)
 	}
 	return &Client{
 		url: o.URL, ua: o.UserAgent, hc: hc, limiter: rate.NewLimiter(rate.Limit(o.RPS), o.Burst),
@@ -452,8 +451,7 @@ func (c *Client) post(ctx context.Context, label string, body []byte) ([]byte, e
 		}
 		return nil, fmt.Errorf("eth %s: %w", label, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	raw, err := httpx.ReadBody(resp, maxResponseBytes)
 	c.observe(label, strconv.Itoa(resp.StatusCode), start)
 	if err != nil {
 		return nil, fmt.Errorf("eth %s: read body: %w", label, err)

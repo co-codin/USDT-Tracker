@@ -7,12 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"io"
 	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/co-codin/USDT-Tracker/internal/httpx"
 
 	"golang.org/x/time/rate"
 
@@ -76,7 +77,7 @@ func NewTelegram(cfg TelegramConfig) (*Telegram, error) {
 	}
 	hc := cfg.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: 15 * time.Second}
+		hc = httpx.NewClient(15 * time.Second)
 	}
 	// Telegram allows ~1 message/second per chat.
 	return &Telegram{cfg: cfg, hc: hc, limiter: rate.NewLimiter(rate.Every(1100*time.Millisecond), 3)}, nil
@@ -219,8 +220,7 @@ func (t *Telegram) sendMessage(ctx context.Context, text string) error {
 			}
 			return fmt.Errorf("telegram: request failed: %w", err)
 		}
-		defer resp.Body.Close()
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		raw, _ := httpx.ReadBody(resp, 4096)
 		var r tgResponse
 		_ = json.Unmarshal(raw, &r)
 		if resp.StatusCode == http.StatusOK && r.OK {

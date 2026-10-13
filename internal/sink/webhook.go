@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -70,7 +69,7 @@ func NewWebhook(cfg WebhookConfig) (*Webhook, error) {
 	}
 	hc := cfg.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: cfg.Timeout}
+		hc = httpx.NewClient(cfg.Timeout)
 	}
 	return &Webhook{cfg: cfg, hc: hc}, nil
 }
@@ -132,8 +131,7 @@ func (w *Webhook) post(ctx context.Context, deliveryID string, body []byte) erro
 		// The URL may carry a token in its path or query: keep it out of logs.
 		return fmt.Errorf("webhook %s: %w", httpx.RedactURL(w.cfg.URL), httpx.ScrubURLError(err))
 	}
-	defer resp.Body.Close()
-	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	snippet, _ := httpx.ReadBody(resp, 512)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}

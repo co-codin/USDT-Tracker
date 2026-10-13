@@ -10,7 +10,6 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
-	"github.com/co-codin/USDT-Tracker/internal/apierr"
 	"io"
 	"log/slog"
 	"math/big"
@@ -19,6 +18,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/co-codin/USDT-Tracker/internal/apierr"
 
 	"github.com/co-codin/USDT-Tracker/internal/chainaddr"
 	"github.com/co-codin/USDT-Tracker/internal/explorer"
