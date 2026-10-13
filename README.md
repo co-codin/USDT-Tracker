@@ -195,6 +195,10 @@ docker compose exec postgres psql -U listener -d tron \
 In compose the Postgres sink is enabled and also stores the cursor (`listener_cursor` table).
 For TON add `CHAINS=tron,ton` (or `ton`) and `TONCENTER_API_KEY` to `.env`.
 
+> **Compose is for local use.** It defaults to the password `listener` and `sslmode=disable` (Postgres
+> is only reachable on the compose network). Set `POSTGRES_PASSWORD` in `.env` before exposing
+> anything, and use `sslmode=require`/`verify-full` for any database reached over a real network.
+
 ### Kubernetes (Helm)
 
 The chart lives in [`deploy/helm/usdt-tracker`](deploy/helm/usdt-tracker). It deploys the app image
@@ -273,6 +277,8 @@ See [`config.example.yaml`](config.example.yaml) for every option with comments.
 | `listener.confirmations` | `LISTENER_CONFIRMATIONS` | `20` | Blocks behind head |
 | `listener.start_block` | `LISTENER_START_BLOCK` | `0` | First run only: `0` = safe head, `N` = block N, `-N` = N blocks back |
 | `listener.poll_interval` | `LISTENER_POLL_INTERVAL` | `3s` | Head polling when caught up |
+| `alerts.large_transfers.interval` | `LARGE_ALERTS_INTERVAL` | `3s` | Minimum gap between whale-channel posts (Telegram limits ~20 msg/min per channel) |
+| `notify_bot.min_amount` | `NOTIFY_MIN_AMOUNT` | `0.01` | Notify-bot ignores smaller transfers (dust / address-poisoning spam) |
 | `listener.batch_size` | `LISTENER_BATCH_SIZE` | `20` | Max blocks per iteration |
 | `listener.concurrency` | `LISTENER_CONCURRENCY` | `2` | Parallel block fetches |
 | `listener.dedupe_cache_size` | – | `100000` | Remembered keys per sink |
@@ -338,6 +344,12 @@ The API is served on the existing ops server (`http.addr`, default `127.0.0.1:90
 export API_TOKEN=$(openssl rand -hex 32)       # or api.token in config.yaml
 SINK_POSTGRES_ENABLED=true DATABASE_URL=postgres://... API_TOKEN=$API_TOKEN ./bin/tron-usdt-listener
 ```
+
+**Compatibility:** `/v1` is stable within 0.x minor releases: fields may be added, never removed or
+renamed without a new prefix. Every error is JSON `{"error":"<message>","code":"<code>"}`; match on
+`code`, not the message: `unauthorized` (401), `api_disabled` / `postgres_required` (503),
+`invalid_request` / `chain_disabled` (400), `not_found` (404), `conflict` (409),
+`method_not_allowed` (405), `internal_error` (500).
 
 | Request | Success | Errors |
 |---|---|---|
@@ -446,6 +458,9 @@ SINK_POSTGRES_ENABLED=true DATABASE_URL=postgres://… CHAINS=tron,ton,eth ./bin
   `/add` is refused with a "capacity" message once `max_users` (10000) users or
   `max_total_subs` (50000) subscriptions exist (`0` = unlimited). Env: `NOTIFY_MAX_USERS`,
   `NOTIFY_MAX_TOTAL_SUBS`, `NOTIFY_COMMANDS_PER_MINUTE`.
+- **Languages:** replies and notifications follow the user's Telegram language – English, 简体中文
+  or Русский (others fall back to English). `/start` shows a welcome text with the project link;
+  `/plan` shows limits and how to get premium (`NOTIFY_PREMIUM_CONTACT`, e.g. `@you`).
 
 ## CSV / accounting export
 
@@ -605,7 +620,10 @@ Every transfer carries `"chain":"tron"`, `"chain":"ton"` or `"chain":"eth"` (TON
 A webhook batch always contains one block of one chain; TON `block_number` is the masterchain seqno.
 
 `5xx`, `408`, `429` (with `Retry-After`) and network errors are retried with backoff; other `4xx` are
-permanent. Verify signatures in Go with the bundled package:
+permanent. Delivery is **at-least-once**: after a crash or a retry the same block can arrive twice
+with the same `X-Webhook-Delivery`, so store processed delivery ids (or transfer `id`s) and ignore
+duplicates. Reject requests whose `X-Signature-Timestamp` is more than ~5 minutes from your clock
+(replay protection; the `tolerance` argument below). Verify signatures in Go with the bundled package:
 
 ```go
 import "github.com/co-codin/USDT-Tracker/pkg/webhooksig"
@@ -754,6 +772,11 @@ make test-integration TEST_DATABASE_URL='postgres://postgres:test@localhost:5543
   separate cursors, `-chain ton` backfill, and Postgres with a TON address added via the API.
 
 ## Design notes & limitations
+
+- **Run one replica per cursor.** Two instances sharing a cursor would deliver everything twice; the
+  Helm chart uses `replicas: 1` with a `Recreate` strategy, so do not add an HPA, and a
+  PodDisruptionBudget only makes sense as `maxUnavailable: 1`. Notify-bot messages are at-most-once
+  on a crash (queued but unsent messages are lost); webhooks / Postgres / Telegram alerts are at-least-once.
 
 - **Delivery semantics** are at-least-once. A crash *between* delivering a block and persisting the
   cursor replays that block on restart; use `id` (`tx_id:log_index`) / `X-Webhook-Delivery` for
