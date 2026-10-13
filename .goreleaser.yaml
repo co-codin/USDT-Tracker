@@ -1,0 +1,39 @@
+version: 2
+
+project_name: usdt-tracker
+
+builds:
+  - id: listener
+    main: ./cmd/listener
+    binary: usdt-tracker
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Tag }}"]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [LICENSE, README.md, config.example.yaml, .env.example]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^chore:", "^test:"]
+
+release:
+  github:
+    owner: co-codin
+    name: USDT-Tracker
+  footer: |
+    Docker: `docker pull ghcr.io/co-codin/usdt-tracker:{{ .Tag }}` (linux/amd64, linux/arm64)

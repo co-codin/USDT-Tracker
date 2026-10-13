@@ -4,13 +4,16 @@
 # Dependabot (.github/dependabot.yml) proposes updates. Keep the Go version in
 # line with the toolchain directive in go.mod.
 # ---- build ----
-FROM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/listener ./cmd/listener \
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+# Cross-compiles on the build host (no QEMU) for multi-arch images.
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/listener ./cmd/listener \
  && mkdir -p /out/data
 
 # ---- runtime ----
