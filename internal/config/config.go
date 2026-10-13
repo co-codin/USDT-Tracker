@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -269,8 +270,12 @@ type NotifyBot struct {
 
 // PostgresSink config.
 type PostgresSink struct {
-	Enabled    bool   `yaml:"enabled"`
-	DSN        string `yaml:"dsn"`
+	Enabled bool   `yaml:"enabled"`
+	DSN     string `yaml:"dsn"`
+	// Password (DATABASE_PASSWORD) is merged into DSN when set, so the URL
+	// need not embed it and special characters need no escaping. A password
+	// already in the DSN is replaced.
+	Password   string `yaml:"password"`
 	CursorName string `yaml:"cursor_name"`
 	BestEffort bool   `yaml:"best_effort"`
 }
@@ -338,6 +343,13 @@ func Load(path string, lookup func(string) (string, bool)) (Config, error) {
 	}
 	if err := applyEnv(&cfg, lookup); err != nil {
 		return cfg, err
+	}
+	if pw := cfg.Sinks.Postgres.Password; pw != "" && cfg.Sinks.Postgres.DSN != "" {
+		dsn, err := WithPassword(cfg.Sinks.Postgres.DSN, pw)
+		if err != nil {
+			return cfg, fmt.Errorf("config: DATABASE_PASSWORD: %w", err)
+		}
+		cfg.Sinks.Postgres.DSN = dsn
 	}
 	return cfg, cfg.Validate()
 }
@@ -742,6 +754,7 @@ var envBindings = []envBinding{
 	{"HTTP_HEALTH_DETAILS", boolean(func(c *Config) *bool { return &c.HTTP.HealthDetails })},
 	{"SINK_POSTGRES_ENABLED", boolean(func(c *Config) *bool { return &c.Sinks.Postgres.Enabled })},
 	{"DATABASE_URL", str(func(c *Config) *string { return &c.Sinks.Postgres.DSN })},
+	{"DATABASE_PASSWORD", str(func(c *Config) *string { return &c.Sinks.Postgres.Password })},
 }
 
 func splitList(v string) []string {
@@ -779,4 +792,27 @@ func applyEnv(c *Config, lookup func(string) (string, bool)) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// WithPassword returns dsn with its password set to pw. Both URL DSNs
+// (postgres://user@host/db) and keyword/value DSNs (host=… user=…) are
+// supported; pw may contain any character (it is escaped as needed).
+func WithPassword(dsn, pw string) (string, error) {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", errors.New("invalid DATABASE_URL")
+		}
+		user := ""
+		if u.User != nil {
+			user = u.User.Username()
+		}
+		if user == "" {
+			return "", errors.New("DATABASE_URL has no user name to attach the password to")
+		}
+		u.User = url.UserPassword(user, pw)
+		return u.String(), nil
+	}
+	esc := strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(pw)
+	return strings.TrimSpace(dsn) + " password='" + esc + "'", nil
 }

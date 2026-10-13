@@ -138,6 +138,14 @@ externalDatabase:
   url: ""                  # postgres://user:pass@host:5432/db?sslmode=require
   existingSecret: ""
   existingSecretKey: DATABASE_URL
+  # Optional: keep the password out of the URL. When name is set the pod gets
+  # DATABASE_PASSWORD from this secret key and the app merges it into the URL
+  # (url/existingSecret then hold e.g. postgres://user@host:5432/db). Any
+  # characters are allowed; no URL-escaping needed. Works with an existing
+  # managed-DB secret (e.g. CloudNativePG "<cluster>-app", key "password").
+  passwordSecret:
+    name: ""
+    key: password
 
 # --- Networking ---------------------------------------------------------------
 containerPort: 9090        # /metrics, /healthz, /v1/addresses

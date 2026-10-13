@@ -63,20 +63,28 @@ spec:
             - name: SINK_POSTGRES_ENABLED
               value: {{ ternary "true" "false" (eq $dbEnabled "true") | quote }}
             {{- if .Values.postgresql.enabled }}
-            - name: DB_PASSWORD
+            # The password stays out of the URL: the app merges DATABASE_PASSWORD
+            # into DATABASE_URL itself, so any characters are safe.
+            - name: DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "usdt-tracker.postgresql.secretName" . }}
                   key: {{ .Values.postgresql.auth.secretKeys.userPasswordKey }}
-            # $(DB_PASSWORD) is expanded by Kubernetes; generated passwords are alphanumeric.
             - name: DATABASE_URL
-              value: {{ printf "postgres://%s:$(DB_PASSWORD)@%s:5432/%s?sslmode=disable" .Values.postgresql.auth.username (include "usdt-tracker.postgresql.fullname" .) .Values.postgresql.auth.database | quote }}
+              value: {{ printf "postgres://%s@%s:5432/%s?sslmode=disable" (urlquery .Values.postgresql.auth.username) (include "usdt-tracker.postgresql.fullname" .) .Values.postgresql.auth.database | quote }}
             {{- else if .Values.externalDatabase.existingSecret }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.externalDatabase.existingSecret }}
                   key: {{ .Values.externalDatabase.existingSecretKey }}
+            {{- end }}
+            {{- if and (not .Values.postgresql.enabled) .Values.externalDatabase.passwordSecret.name }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalDatabase.passwordSecret.name }}
+                  key: {{ .Values.externalDatabase.passwordSecret.key }}
             {{- end }}
             {{- range $k, $v := .Values.extraEnv }}
             - name: {{ $k }}

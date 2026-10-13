@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,7 +135,7 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		"SINK_STDOUT_ENABLED":  "false",
 		"SINK_WEBHOOK_ENABLED": "true", "WEBHOOK_URL": "https://example.invalid/h", "WEBHOOK_SECRET": "ws",
 		"SINK_TELEGRAM_ENABLED": "1", "TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "c", "TELEGRAM_MIN_AMOUNT": "5",
-		"SINK_POSTGRES_ENABLED": "true", "DATABASE_URL": "postgres://x",
+		"SINK_POSTGRES_ENABLED": "true", "DATABASE_URL": "postgres://u@x", "DATABASE_PASSWORD": "p w",
 		"CHAINS": "TRON, ton", "TON_API_URL": "https://ton.example/api/v3", "TONCENTER_API_KEY": "tk", "TON_RPS": "9",
 		"TON_JETTON_MASTER":   "0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe",
 		"TON_WATCH_ADDRESSES": "UQCdssroU88tuHDqBtHoKG8gLNmtaJ38dLmBlVINBklYWYEg, 0:852443f8599fe6a5da34fe43049ac4e0beb3071bb2bfb56635ea9421287c283a",
@@ -165,7 +166,7 @@ func TestEveryEnvVarIsApplied(t *testing.T) {
 		c.API.Token == "0123456789abcdef0123", !c.Sinks.Stdout.Enabled,
 		c.Sinks.Webhook.Enabled, c.Sinks.Webhook.URL != "", c.Sinks.Webhook.Secret == "ws",
 		c.Sinks.Telegram.Enabled, c.Sinks.Telegram.BotToken == "t", c.Sinks.Telegram.ChatID == "c", c.Sinks.Telegram.MinAmount == "5",
-		c.Sinks.Postgres.Enabled, c.Sinks.Postgres.DSN == "postgres://x",
+		c.Sinks.Postgres.Enabled, c.Sinks.Postgres.DSN == "postgres://u:p%20w@x",
 		len(c.Chains) == 2 && c.Chains[0] == "tron" && c.Chains[1] == "ton", c.TON.APIURL == "https://ton.example/api/v3",
 		c.TON.APIKey == "tk", c.TON.RPS == 9, c.TON.JettonMaster != "", len(c.TON.WatchAddresses) == 2,
 		c.TON.Confirmations == 5, c.TON.StartBlock == -10, c.TON.PollInterval.D() == 500*time.Millisecond, c.TON.CursorFile == "/tmp/t.json",
@@ -266,5 +267,45 @@ func TestLargeAlertsTokenFallback(t *testing.T) {
 	}
 	if c.Alerts.LargeTransfers.Token(&c) != "shared" || c.Alerts.LargeTransfers.Threshold != "100000" {
 		t.Fatalf("%+v", c.Alerts.LargeTransfers)
+	}
+}
+
+func TestWithPassword(t *testing.T) {
+	pw := `p@ss:w/rd?#%' \x`
+	got, err := WithPassword("postgres://app@db:5432/tron?sslmode=disable", pw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := u.User.Password(); p != pw || u.User.Username() != "app" || u.Host != "db:5432" || u.Query().Get("sslmode") != "disable" {
+		t.Fatalf("bad url %q", got)
+	}
+	if _, err := WithPassword("postgres://db/tron", "x"); err == nil {
+		t.Fatal("want error without user")
+	}
+	if _, err := WithPassword("postgres://%zz", "x"); err == nil {
+		t.Fatal("want parse error")
+	}
+	kv, _ := WithPassword("host=db user=app", `a'b\c`)
+	if kv != `host=db user=app password='a\'b\\c'` {
+		t.Fatalf("kv=%q", kv)
+	}
+}
+
+func TestLoadDatabasePassword(t *testing.T) {
+	env := map[string]string{"SINK_POSTGRES_ENABLED": "true", "DATABASE_URL": "postgres://app@db/tron", "DATABASE_PASSWORD": "s3cr@t/!"}
+	cfg, err := Load("", func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sinks.Postgres.DSN != "postgres://app:s3cr%40t%2F%21@db/tron" {
+		t.Fatalf("dsn=%q", cfg.Sinks.Postgres.DSN)
+	}
+	env["DATABASE_URL"] = "postgres://db/tron"
+	if _, err := Load("", func(k string) (string, bool) { v, ok := env[k]; return v, ok }); err == nil {
+		t.Fatal("want error")
 	}
 }
