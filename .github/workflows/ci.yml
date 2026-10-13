@@ -36,7 +36,7 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://listener:listener@localhost:5432/tron_test?sslmode=disable
       - name: build
-        run: go build ./cmd/listener
+        run: go build ./cmd/usdt-tracker
 
   lint:
     runs-on: ubuntu-latest

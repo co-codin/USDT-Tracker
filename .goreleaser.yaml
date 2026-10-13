@@ -4,7 +4,7 @@ project_name: usdt-tracker
 
 builds:
   - id: usdt-tracker
-    main: ./cmd/listener
+    main: ./cmd/usdt-tracker
     binary: usdt-tracker
     env: [CGO_ENABLED=0]
     flags: [-trimpath]
