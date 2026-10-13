@@ -1,6 +1,6 @@
 // Package app wires configuration, the TRON source, filter, sinks, cursor
 // store, metrics and the HTTP server into a runnable application. It is the
-// composition root used by cmd/listener and by end-to-end tests.
+// composition root used by cmd/usdt-tracker and by end-to-end tests.
 package app
 
 import (

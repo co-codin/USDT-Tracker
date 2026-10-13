@@ -3,7 +3,7 @@ version: 2
 project_name: usdt-tracker
 
 builds:
-  - id: listener
+  - id: usdt-tracker
     main: ./cmd/listener
     binary: usdt-tracker
     env: [CGO_ENABLED=0]

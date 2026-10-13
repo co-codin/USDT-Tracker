@@ -36,7 +36,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "export" {
 		return runExport(args[1:], stdout, stderr)
 	}
-	fs := flag.NewFlagSet("tron-usdt-listener", flag.ContinueOnError)
+	fs := flag.NewFlagSet("usdt-tracker", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
 		configPath  = fs.String("config", defaultConfigPath(), "path to YAML config (env: CONFIG_FILE)")
@@ -50,7 +50,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *showVersion {
-		fmt.Fprintln(stdout, "tron-usdt-listener", version)
+		fmt.Fprintln(stdout, "usdt-tracker", version)
 		return 0
 	}
 	if *chainName != "" && *from == 0 {

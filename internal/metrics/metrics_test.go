@@ -35,8 +35,8 @@ func TestObservers(t *testing.T) {
 	rec := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
 	body, _ := io.ReadAll(rec.Body)
-	for _, s := range []string{"tron_listener_rpc_retries_total", "tron_listener_sink_delivery_duration_seconds", "go_goroutines",
-		`tron_listener_head_block{chain="ton"} 42`, `tron_listener_transfers_matched_total{chain="ton",reason="watch_incoming"} 1`} {
+	for _, s := range []string{"usdt_tracker_rpc_retries_total", "usdt_tracker_sink_delivery_duration_seconds", "go_goroutines",
+		`usdt_tracker_head_block{chain="ton"} 42`, `usdt_tracker_transfers_matched_total{chain="ton",reason="watch_incoming"} 1`} {
 		if !strings.Contains(string(body), s) {
 			t.Errorf("metrics output missing %s", s)
 		}

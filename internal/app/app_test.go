@@ -346,7 +346,7 @@ func TestE2E_RangeConfirmationsRetriesAndOutputs(t *testing.T) {
 	if !strings.Contains(health, `"ok":true`) {
 		t.Errorf("unexpected /healthz body: %s", health)
 	}
-	for _, s := range []string{"tron_listener_cursor_block", "tron_listener_rpc_requests_total", "tron_listener_sink_deliveries_total{sink=\"webhook\",status=\"ok\"}"} {
+	for _, s := range []string{"usdt_tracker_cursor_block", "usdt_tracker_rpc_requests_total", "usdt_tracker_sink_deliveries_total{sink=\"webhook\",status=\"ok\"}"} {
 		if !strings.Contains(metricsText, s) {
 			t.Errorf("/metrics missing %s", s)
 		}

@@ -1,5 +1,5 @@
 // Package webhooksig signs and verifies webhook payloads sent by
-// tron-usdt-listener. Consumers can import it to verify deliveries:
+// usdt-tracker. Consumers can import it to verify deliveries:
 //
 //	err := webhooksig.Verify(secret, r.Header.Get(webhooksig.HeaderTimestamp),
 //		r.Header.Get(webhooksig.HeaderSignature), body, 5*time.Minute, time.Now())

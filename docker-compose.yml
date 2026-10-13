@@ -23,7 +23,7 @@ services:
       context: .
       args:
         VERSION: ${VERSION:-dev}
-    image: tron-usdt-listener:local
+    image: usdt-tracker:local
     restart: unless-stopped
     env_file:
       - path: .env

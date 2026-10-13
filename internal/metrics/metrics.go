@@ -10,7 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-const ns = "tron_listener"
+const ns = "usdt_tracker"
 
 // Metrics holds all collectors. It implements sink.Recorder; For(chain)
 // returns a per-chain view that implements the chain clients' Observer.

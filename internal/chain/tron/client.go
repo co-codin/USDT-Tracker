@@ -78,7 +78,7 @@ func NewClient(o Options) *Client {
 		o.MaxRetries = 8
 	}
 	if o.UserAgent == "" {
-		o.UserAgent = "tron-usdt-listener"
+		o.UserAgent = "usdt-tracker"
 	}
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)

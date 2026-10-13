@@ -112,7 +112,7 @@ func (w *Webhook) post(ctx context.Context, deliveryID string, body []byte) erro
 		return retry.Permanent(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "tron-usdt-listener")
+	req.Header.Set("User-Agent", "usdt-tracker")
 	req.Header.Set(HeaderEvent, WebhookEvent)
 	req.Header.Set(HeaderDelivery, deliveryID)
 	for k, v := range w.cfg.Headers {

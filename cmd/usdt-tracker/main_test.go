@@ -15,7 +15,7 @@ import (
 
 func TestVersionAndFlagErrors(t *testing.T) {
 	var out, errb bytes.Buffer
-	if code := run([]string{"-version"}, &out, &errb); code != 0 || !strings.Contains(out.String(), "tron-usdt-listener") {
+	if code := run([]string{"-version"}, &out, &errb); code != 0 || !strings.Contains(out.String(), "usdt-tracker") {
 		t.Fatalf("-version: code=%d out=%q", code, out.String())
 	}
 	if code := run([]string{"-to", "5"}, &out, &errb); code != 2 {

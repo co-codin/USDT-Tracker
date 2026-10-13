@@ -29,7 +29,7 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		bom        = fs.Bool("bom", false, "prefix a UTF-8 byte order mark (for Excel)")
 	)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: tron-usdt-listener export -address <addr> [-chain tron|ton|eth] [-from YYYY-MM-DD] [-to YYYY-MM-DD] [-o file.csv] [-bom]")
+		fmt.Fprintln(stderr, "usage: usdt-tracker export -address <addr> [-chain tron|ton|eth] [-from YYYY-MM-DD] [-to YYYY-MM-DD] [-o file.csv] [-bom]")
 		fmt.Fprintln(stderr, "Times are UTC (RFC 3339); amounts are exact decimal strings.")
 		fs.PrintDefaults()
 	}

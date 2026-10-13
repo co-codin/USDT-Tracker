@@ -96,7 +96,7 @@ func TestE2E_TONOnly(t *testing.T) {
 	if !strings.Contains(body, `"ok":true`) || strings.Contains(body, `"chains"`) {
 		t.Errorf("single-chain health shape changed: %s", body)
 	}
-	for _, s := range []string{`tron_listener_cursor_block{chain="ton"}`, `tron_listener_rpc_requests_total{chain="ton",endpoint="/jetton/transfers"`, `tron_listener_rpc_retries_total{chain="ton",endpoint="/jetton/transfers",reason="rate_limited"} 1`} {
+	for _, s := range []string{`usdt_tracker_cursor_block{chain="ton"}`, `usdt_tracker_rpc_requests_total{chain="ton",endpoint="/jetton/transfers"`, `usdt_tracker_rpc_retries_total{chain="ton",endpoint="/jetton/transfers",reason="rate_limited"} 1`} {
 		if !strings.Contains(string(mb), s) {
 			t.Errorf("metrics missing %s", s)
 		}

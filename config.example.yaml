@@ -1,4 +1,4 @@
-# USDT-Tracker (tron-usdt-listener) configuration.
+# USDT-Tracker configuration.
 # Copy to config.yaml and adjust. Every value can be overridden by an
 # environment variable (see README "Configuration"); keep secrets in env.
 

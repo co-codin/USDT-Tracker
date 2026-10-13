@@ -27,7 +27,7 @@ podAnnotations: {}
 podLabels: {}
 
 # --- Application configuration ---------------------------------------------
-# Rendered into config.yaml (mounted at /etc/tron-usdt-listener/config.yaml).
+# Rendered into config.yaml (mounted at /etc/usdt-tracker/config.yaml).
 # Same schema as config.example.yaml; unknown keys are rejected by the app.
 # Secrets and database settings are injected as env vars and override this.
 config:

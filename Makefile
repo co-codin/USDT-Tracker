@@ -1,5 +1,5 @@
-BINARY   := bin/tron-usdt-listener
-PKG      := ./cmd/listener
+BINARY   := bin/usdt-tracker
+PKG      := ./cmd/usdt-tracker
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -s -w -X main.version=$(VERSION)
 
@@ -51,7 +51,7 @@ tidy: ## go mod tidy
 	go mod tidy
 
 docker-build: ## Build the Docker image
-	docker build --build-arg VERSION=$(VERSION) -t tron-usdt-listener:$(VERSION) .
+	docker build --build-arg VERSION=$(VERSION) -t usdt-tracker:$(VERSION) .
 
 up: ## docker compose up (listener + Postgres)
 	docker compose up -d --build
