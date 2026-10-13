@@ -95,6 +95,11 @@ secrets:
   # optional): API_TOKEN, TRON_PRO_API_KEY, TONCENTER_API_KEY, ETH_RPC_URL, TELEGRAM_BOT_TOKEN, LARGE_ALERTS_BOT_TOKEN, TELEGRAM_NOTIFY_BOT_TOKEN,
   # WEBHOOK_SECRET, DATABASE_URL.
   existingSecret: ""
+  # Set to true when existingSecret contains DATABASE_URL (and set
+  # postgresql.enabled=false). Without it the chart cannot know a database is
+  # configured and would disable the Postgres sink. Prefer
+  # externalDatabase.existingSecret, which needs no flag.
+  existingSecretHasDatabaseUrl: false
   # Values below are only used when existingSecret is empty. Leave empty here.
   apiToken: ""             # admin API bearer token (>= 16 chars); also guards /v1/export.csv; empty = API disabled
   tronApiKey: ""           # TronGrid TRON-PRO-API-KEY

@@ -77,7 +77,7 @@ for the "postgresql" subchart.
 
 {{/* True when a database (bundled or external) is configured. */}}
 {{- define "usdt-tracker.databaseEnabled" -}}
-{{- if or .Values.postgresql.enabled .Values.externalDatabase.url .Values.externalDatabase.existingSecret -}}
+{{- if or .Values.postgresql.enabled .Values.externalDatabase.url .Values.externalDatabase.existingSecret (and .Values.secrets.existingSecret .Values.secrets.existingSecretHasDatabaseUrl) -}}
 true
 {{- end }}
 {{- end }}

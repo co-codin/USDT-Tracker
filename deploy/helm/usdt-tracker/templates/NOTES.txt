@@ -13,7 +13,8 @@ Health / metrics:
 {{- if not (include "usdt-tracker.databaseEnabled" .) }}
 
 WARNING: no database configured. The cursor lives in /data ({{ if .Values.persistence.enabled }}PVC{{ else }}emptyDir: lost on restart{{ end }}) and the runtime
-address API (/v1/addresses) answers 503. Enable postgresql.enabled or externalDatabase.*.
+address API (/v1/addresses) and CSV export answer 503 even with an API token. Enable postgresql.enabled,
+externalDatabase.* or, if secrets.existingSecret holds DATABASE_URL, secrets.existingSecretHasDatabaseUrl=true.
 {{- end }}
 
 {{- if or .Values.secrets.apiToken .Values.secrets.existingSecret }}

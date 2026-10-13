@@ -15,3 +15,13 @@
 {{- fail (printf "config.chains: unknown chain %q (want tron|ton|eth)" .) }}
 {{- end }}
 {{- end }}
+{{- $db := include "usdt-tracker.databaseEnabled" . }}
+{{- if and .Values.secrets.existingSecretHasDatabaseUrl (not .Values.secrets.existingSecret) }}
+{{- fail "secrets.existingSecretHasDatabaseUrl=true requires secrets.existingSecret" }}
+{{- end }}
+{{- if and .Values.secrets.existingSecretHasDatabaseUrl .Values.postgresql.enabled }}
+{{- fail "secrets.existingSecretHasDatabaseUrl=true: set postgresql.enabled=false (the bundled database would override DATABASE_URL)" }}
+{{- end }}
+{{- if and (dig "notify_bot" "enabled" false (.Values.config | default dict)) (not $db) }}
+{{- fail "config.notify_bot.enabled=true requires a database: enable postgresql, set externalDatabase.url / externalDatabase.existingSecret, or secrets.existingSecretHasDatabaseUrl=true" }}
+{{- end }}
