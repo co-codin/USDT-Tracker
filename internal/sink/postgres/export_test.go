@@ -64,7 +64,7 @@ func TestExportIntegration(t *testing.T) {
 	}
 	// time window [01:00, 02:00)
 	q := export.Query{Chain: "eth", Address: me, From: base.Add(time.Hour), To: base.Add(2 * time.Hour)}
-	cnt, err = export.Write(ctx, &bytes.Buffer{}, s, q, nil)
+	cnt, err = export.Write(ctx, &bytes.Buffer{}, s, q, export.Options{})
 	if err != nil || cnt != 60 {
 		t.Fatalf("window rows %d %v", cnt, err)
 	}

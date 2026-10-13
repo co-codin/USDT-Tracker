@@ -169,7 +169,7 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 		watchSrc = pg.Watchlist()
 	}
 	for _, c := range chains {
-		minAmount, _ := chainMinAmount(cfg, c)
+		minAmount, _ := chainMinAmount(cfg, c) // already validated above
 		matcher, dyn, err := buildFilter(ctx, cfg, c, minAmount, watchSrc, log)
 		if err != nil {
 			return nil, errors.Join(err, a.disp.Close())
@@ -345,11 +345,12 @@ func chainMinAmount(cfg config.Config, c string) (*big.Int, error) {
 // [from, to] on the single selected chain and returns.
 func (a *App) Run(ctx context.Context, from, to int64) error {
 	if a.srv != nil {
-		if err := a.srv.Start(); err != nil {
+		if err := a.srv.Start(ctx); err != nil {
 			return fmt.Errorf("http server: %w", err)
 		}
 		defer func() {
-			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// ctx is already cancelled here: keep its values, drop the cancel.
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
 			_ = a.srv.Shutdown(sctx)
 		}()

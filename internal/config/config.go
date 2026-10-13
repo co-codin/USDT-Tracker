@@ -296,7 +296,7 @@ func Default() Config {
 		},
 		Cursor: Cursor{File: "./data/cursor.json"},
 		Filter: Filter{Direction: "both", Mode: "any", ReloadInterval: Duration(5 * time.Second)},
-		HTTP:   HTTP{Addr: ":9090", StaleAfter: Duration(2 * time.Minute)},
+		HTTP:   HTTP{Addr: "127.0.0.1:9090", StaleAfter: Duration(2 * time.Minute)},
 		Sinks: Sinks{
 			Stdout:   StdoutSink{Enabled: true},
 			Webhook:  WebhookSink{Timeout: Duration(10 * time.Second), MaxRetries: 5},

@@ -56,7 +56,12 @@ func New(addr string, metrics http.Handler, health HealthFunc, log *slog.Logger)
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": ok, "status": detail})
 	})
 	return &Server{
-		srv: &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second},
+		// No WriteTimeout: /v1/export.csv streams large responses.
+		srv: &http.Server{
+			Addr: addr, Handler: mux,
+			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
+			IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
+		},
 		mux: mux,
 		log: log,
 	}
@@ -66,8 +71,8 @@ func New(addr string, metrics http.Handler, health HealthFunc, log *slog.Logger)
 func (s *Server) Handle(pattern string, h http.Handler) { s.mux.Handle(pattern, h) }
 
 // Start listens in the background. It returns an error if the port is taken.
-func (s *Server) Start() error {
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", s.srv.Addr)
+func (s *Server) Start(ctx context.Context) error {
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", s.srv.Addr)
 	if err != nil {
 		return err
 	}

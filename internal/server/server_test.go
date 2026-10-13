@@ -19,7 +19,7 @@ func TestServerEndpoints(t *testing.T) {
 	if s.Addr() != nil {
 		t.Fatal("Addr must be nil before Start")
 	}
-	if err := s.Start(); err != nil {
+	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
@@ -58,7 +58,7 @@ func TestServerEndpoints(t *testing.T) {
 		t.Fatalf("unknown path: %d", code)
 	}
 	// Port already in use.
-	if err := New(s.Addr().String(), nil, nil, slog.New(slog.DiscardHandler)).Start(); err == nil {
+	if err := New(s.Addr().String(), nil, nil, slog.New(slog.DiscardHandler)).Start(context.Background()); err == nil {
 		t.Fatal("expected error when the port is taken")
 	}
 }
@@ -68,7 +68,7 @@ func TestServerHandleMountsExtraRoutes(t *testing.T) {
 	s.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "api:"+r.URL.Path)
 	}))
-	if err := s.Start(); err != nil {
+	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {

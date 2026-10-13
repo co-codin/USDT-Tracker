@@ -59,7 +59,7 @@ spec:
             - name: ETH_CURSOR_FILE
               value: /data/cursor-eth.json
             - name: HTTP_ADDR
-              value: {{ printf ":%v" .Values.containerPort | quote }}
+              value: {{ printf "0.0.0.0:%v" .Values.containerPort | quote }}
             - name: SINK_POSTGRES_ENABLED
               value: {{ ternary "true" "false" (eq $dbEnabled "true") | quote }}
             {{- if .Values.postgresql.enabled }}

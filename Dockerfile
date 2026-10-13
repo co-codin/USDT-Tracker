@@ -19,8 +19,11 @@ FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c
 COPY --from=build /out/listener /listener
 COPY --from=build --chown=65532:65532 /out/data /data
 COPY config.example.yaml /etc/tron-usdt-listener/config.yaml
+# The binary defaults to 127.0.0.1:9090; inside a container it must listen on
+# all interfaces (publish the port on 127.0.0.1 or behind a TLS proxy).
 ENV CONFIG_FILE=/etc/tron-usdt-listener/config.yaml \
-    CURSOR_FILE=/data/cursor.json
+    CURSOR_FILE=/data/cursor.json \
+    HTTP_ADDR=0.0.0.0:9090
 WORKDIR /data
 EXPOSE 9090
 USER nonroot:nonroot

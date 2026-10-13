@@ -92,7 +92,8 @@ filter:
   reload_interval: 5s
 
 http:
-  addr: ":9090"              # /metrics, /healthz and the admin API (/v1/*); empty disables
+  addr: "127.0.0.1:9090"     # /metrics, /healthz and the admin API (/v1/*); empty disables. Default is localhost only;
+                             # use ":9090" to listen on all interfaces – then put the admin API behind a TLS reverse proxy
   health_stale_after: 2m     # /healthz returns 503 if no progress for this long
 
 api:

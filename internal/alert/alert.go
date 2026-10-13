@@ -179,13 +179,13 @@ func (a *Alerter) Run(ctx context.Context, flushTimeout time.Duration) {
 		if wait := a.cfg.Interval - time.Since(last); !last.IsZero() && wait > 0 {
 			select {
 			case <-ctx.Done():
-				a.flush(flushTimeout)
+				a.flush(ctx, flushTimeout)
 				return
 			case <-time.After(wait):
 			}
 		}
 		if ctx.Err() != nil {
-			a.flush(flushTimeout)
+			a.flush(ctx, flushTimeout)
 			return
 		}
 		a.sendNext(ctx)
@@ -193,11 +193,13 @@ func (a *Alerter) Run(ctx context.Context, flushTimeout time.Duration) {
 	}
 }
 
-func (a *Alerter) flush(timeout time.Duration) {
+// flush sends what is still queued after ctx was cancelled (shutdown): the
+// deadline derives from ctx without its cancellation.
+func (a *Alerter) flush(parent context.Context, timeout time.Duration) {
 	if timeout <= 0 || a.Pending() == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), timeout)
 	defer cancel()
 	for a.Pending() > 0 && ctx.Err() == nil {
 		a.sendNext(ctx)

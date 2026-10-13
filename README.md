@@ -281,7 +281,7 @@ See [`config.example.yaml`](config.example.yaml) for every option with comments.
 | `filter.min_amount` | `FILTER_MIN_AMOUNT` | `0` | Large-transfer threshold in USDT |
 | `filter.mode` | `FILTER_MODE` | `any` | `any` = watched OR large, `all` = AND |
 | `filter.reload_interval` | `FILTER_RELOAD_INTERVAL` | `5s` | How often enabled `watch_addresses` rows are re-read (API writes apply immediately) |
-| `http.addr` | `HTTP_ADDR` | `:9090` | `/metrics`, `/healthz`, admin API; empty disables |
+| `http.addr` | `HTTP_ADDR` | `127.0.0.1:9090` | `/metrics`, `/livez`, `/readyz`, `/healthz`, admin API; empty disables. Localhost only by default; the Docker image and Helm chart set `0.0.0.0:9090` explicitly |
 | `api.token` | `API_TOKEN` | – | Bearer token for `/v1/*` (≥ 16 chars); **empty disables the admin API** |
 | `http.health_stale_after` | – | `2m` | `/healthz` → 503 without progress |
 | `http.health_details` | `HTTP_HEALTH_DETAILS` | `false` | include raw upstream/DB error text in `/healthz` |
@@ -331,7 +331,7 @@ Payment gateways usually create a fresh deposit address per order. Instead of ed
 `filter.watch_addresses` and restarting, add and remove addresses over HTTP while the listener runs.
 
 **Requirements:** the Postgres sink (addresses live in the `watch_addresses` table) and an API token.
-The API is served on the existing ops server (`http.addr`, default `:9090`) under `/v1/`.
+The API is served on the existing ops server (`http.addr`, default `127.0.0.1:9090`) under `/v1/`.
 
 ```bash
 export API_TOKEN=$(openssl rand -hex 32)       # or api.token in config.yaml
@@ -390,9 +390,18 @@ How it works:
   legacy rule applies: no static addresses, no DB rows and no `min_amount` → every transfer.
 - To pause an address without deleting it, set `enabled = false` in SQL (no API endpoint for that yet).
 
-**Security:** the token is compared in constant time; request bodies are capped at 4 KB. The API
-has no TLS of its own – keep `:9090` on localhost/private network (docker-compose binds
-`127.0.0.1:9090`) or put it behind a TLS reverse proxy. `/metrics` and `/healthz` stay unauthenticated.
+**Security:** the token is compared in constant time; request bodies are capped at 4 KB; the server
+sets read/idle timeouts and a 16 KB header limit. The API has no TLS of its own and the bearer token
+would travel in clear text over plain HTTP – the binary listens on `127.0.0.1:9090` by default
+(docker-compose publishes `127.0.0.1:9090`); to expose it, terminate TLS in a reverse proxy, e.g. Caddy:
+
+```
+api.example.com {
+    reverse_proxy /v1/* 127.0.0.1:9090
+}
+```
+
+`/metrics`, `/livez`, `/readyz` and `/healthz` stay unauthenticated – do not route them publicly.
 
 ## Telegram notify bot (self-service)
 
