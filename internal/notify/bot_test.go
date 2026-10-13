@@ -196,7 +196,7 @@ func waitFor(t *testing.T, cond func() bool) {
 func TestFormatMemoEscaping(t *testing.T) {
 	tr := usdt("ton", tonR, tonR, 1_000_000, 0)
 	tr.Memo = "<b>x</b>"
-	s := format([]note{{t: tr, dir: "self"}})
+	s := format(LangEN, []note{{t: tr, dir: "self"}})
 	if !strings.Contains(s, "self-transfer on TON") || !strings.Contains(s, "&lt;b&gt;x&lt;/b&gt;") {
 		t.Fatal(s)
 	}
@@ -265,4 +265,44 @@ func TestPerChatRateLimit(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+func TestLanguages(t *testing.T) {
+	b, _, _ := newBot(t, Config{FreeLimit: 3, PremiumContact: "@owner"})
+	ctx := context.Background()
+	say := func(lang, text string) string {
+		m := msg(9, text)
+		m.From = &struct {
+			ID           int64  `json:"id"`
+			Username     string `json:"username"`
+			LanguageCode string `json:"language_code"`
+		}{ID: 9, LanguageCode: lang}
+		return b.Handle(ctx, m)
+	}
+	if r := say("zh-hans", "/start"); !strings.Contains(r, "到账通知") || !strings.Contains(r, ProjectURL) || !strings.Contains(r, "最多 3 个地址") {
+		t.Fatal(r)
+	}
+	if r := say("ru", "/add "+tronA); !strings.Contains(r, "Отслеживаю адрес TRON") {
+		t.Fatal(r)
+	}
+	if r := say("ru", "/plan"); !strings.Contains(r, "Тариф") || !strings.Contains(r, "@owner") {
+		t.Fatal(r)
+	}
+	if r := say("de", "/help"); !strings.Contains(r, "/add &lt;address&gt;") {
+		t.Fatal(r)
+	}
+	if r := say("zh", "/add nonsense"); !strings.Contains(r, "无法识别") {
+		t.Fatal(r)
+	}
+	tr0 := usdt("tron", tronB, tronA, 1_000_000, 0)
+	if s := format(LangZH, []note{{chatID: 9, t: tr0, dir: "in"}}); !strings.Contains(s, "已到账") || !strings.Contains(s, "查看交易") {
+		t.Fatal(s)
+	}
+	for _, l := range []string{LangZH, LangRU} {
+		for k := range catalog[LangEN] {
+			if _, ok := catalog[l][k]; !ok {
+				t.Errorf("%s: missing translation for key %d", l, k)
+			}
+		}
+	}
 }

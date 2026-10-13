@@ -163,6 +163,7 @@ notify_bot:
   max_users: 10000          # env NOTIFY_MAX_USERS, bot-wide cap on users (0 = unlimited)
   max_total_subs: 50000     # env NOTIFY_MAX_TOTAL_SUBS, bot-wide cap on subscriptions
   commands_per_minute: 20   # env NOTIFY_COMMANDS_PER_MINUTE, per chat (burst 5); extra messages are dropped
+  premium_contact: ""       # env NOTIFY_PREMIUM_CONTACT, shown by /plan (e.g. "@you" or a URL)
   min_amount: "0.01"         # env NOTIFY_MIN_AMOUNT, skips dust / zero-value address-poisoning transfers
   poll_timeout: 50s
   api_base: ""

@@ -48,6 +48,9 @@ type Config struct {
 	// subscriptions; /add is refused beyond them. 0 = unlimited.
 	MaxUsers     int
 	MaxTotalSubs int
+	// PremiumContact (optional) is shown by /plan as the way to upgrade,
+	// e.g. "@your_username" or a URL.
+	PremiumContact string
 	// CommandsPerMinute is the per-chat command budget (burst 5); extra
 	// messages are dropped silently. Default 20.
 	CommandsPerMinute int
@@ -154,6 +157,7 @@ type Bot struct {
 	rlMu    sync.Mutex
 	chats   map[int64]*chatLimiter
 	limited atomic.Int64
+	langs   sync.Map // chat id → language of the last command
 }
 
 // New creates a bot.
@@ -350,23 +354,29 @@ func (b *Bot) pollLoop(ctx context.Context) {
 	}
 }
 
-const helpText = `👋 <b>USDT payment notifications</b>
-I message you whenever USDT arrives at (or leaves) your addresses on TRON, TON or Ethereum. Read-only: I never ask for keys or seed phrases.
-
-/add &lt;address&gt; – watch an address (network detected automatically)
-/list – your addresses
-/remove &lt;address or number&gt; – stop watching
-/plan – your plan and limits
-/help – this message`
-
 // Handle processes one message and returns the HTML reply ("" = none).
+// Replies use the language of the user's Telegram client (en, zh, ru).
 func (b *Bot) Handle(ctx context.Context, m *tgbot.Message) string {
+	lang := LangEN
+	username := ""
+	if m.From != nil {
+		lang = langOf(m.From.LanguageCode)
+		username = m.From.Username
+	}
+	T := func(k msgKey, args ...any) string {
+		if len(args) == 0 {
+			return tr(lang, k)
+		}
+		return fmt.Sprintf(tr(lang, k), args...)
+	}
 	text := strings.TrimSpace(m.Text)
 	if !strings.HasPrefix(text, "/") {
 		if _, err := chainaddr.Detect(text); err == nil && !strings.ContainsAny(text, " \n") {
 			text = "/add " + text // a bare address means /add
+		} else if m.Chat.Type == "" || m.Chat.Type == "private" {
+			return T(mHint)
 		} else {
-			return "Send /add &lt;address&gt; or /help."
+			return ""
 		}
 	}
 	fields := strings.Fields(text)
@@ -380,18 +390,15 @@ func (b *Bot) Handle(ctx context.Context, m *tgbot.Message) string {
 		// In groups any member could change the group's subscriptions:
 		// only private chats are served.
 		if cmd == "/start" || cmd == "/help" || cmd == "/add" {
-			return "🔒 Please message me in a private chat to manage your addresses."
+			return T(mPrivateOnly)
 		}
 		return ""
 	}
-	username := ""
-	if m.From != nil {
-		username = m.From.Username
-	}
+	b.langs.Store(chatID, lang) // notifications follow the last language seen
 	user, known, err := b.store.GetUser(ctx, chatID)
 	if err != nil {
 		b.log.Error("notify: get user", "err", err)
-		return "⚠️ Temporary error, please try again later."
+		return T(mTempError)
 	}
 	if known && user.Blocked { // they talk to us again: resume deliveries
 		if err := b.store.SetBlocked(ctx, chatID, false); err == nil {
@@ -399,97 +406,101 @@ func (b *Bot) Handle(ctx context.Context, m *tgbot.Message) string {
 		}
 	}
 	switch cmd {
-	case "/start", "/help":
-		return helpText + fmt.Sprintf("\n\nFree plan: up to %d addresses.", b.cfg.FreeLimit)
+	case "/start":
+		return T(mStart) + "\n\n" + T(mHelp) + "\n\n" + T(mFreePlan, b.cfg.FreeLimit)
+	case "/help":
+		return T(mHelp) + "\n\n" + T(mFreePlan, b.cfg.FreeLimit)
 	case "/add":
 		if len(args) != 1 {
-			return "Usage: /add &lt;address&gt;\nExamples: T…, UQ…/EQ… or 0x…"
+			return T(mUsageAdd)
 		}
-		c, addr, err := b.parseAddress(args[0])
+		c, addr, err := b.parseAddress(lang, args[0])
 		if err != nil {
 			return "❌ " + html.EscapeString(err.Error())
 		}
 		switch err := b.store.AddSub(ctx, chatID, username, c, addr, b.limits()); {
 		case errors.Is(err, ErrExists):
-			return "ℹ️ Already watching this address."
+			return T(mAlready)
 		case errors.Is(err, ErrCapacity):
-			return "⏳ This bot is at capacity right now and cannot accept new addresses. Please try again later."
+			return T(mCapacity)
 		case errors.Is(err, ErrLimit):
-			return fmt.Sprintf("🔒 Your %s plan allows %d addresses. Remove one with /remove, or upgrade to premium for up to %d.",
-				html.EscapeString(user.Plan), b.cfg.Limit(user.Plan), b.cfg.PremiumLimit)
+			return T(mLimit, html.EscapeString(user.Plan), b.cfg.Limit(user.Plan), b.cfg.PremiumLimit)
 		case err != nil:
 			b.log.Error("notify: add", "err", err)
-			return "⚠️ Temporary error, please try again later."
+			return T(mTempError)
 		}
 		b.markDirty()
-		return fmt.Sprintf("✅ Watching %s address\n<code>%s</code>\nYou'll get a message for every incoming and outgoing USDT transfer.",
-			explorer.ChainLabel(c), html.EscapeString(explorer.DisplayAddress(c, addr)))
+		return T(mWatching, explorer.ChainLabel(c), html.EscapeString(explorer.DisplayAddress(c, addr)))
 	case "/list":
 		subs, err := b.store.ListSubs(ctx, chatID)
 		if err != nil {
-			return "⚠️ Temporary error, please try again later."
+			return T(mTempError)
 		}
 		if len(subs) == 0 {
-			return "You are not watching any address yet. Send /add &lt;address&gt;."
+			return T(mNone)
 		}
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "📋 Your addresses (%d/%d, %s plan):\n", len(subs), b.cfg.Limit(user.Plan), html.EscapeString(user.Plan))
+		sb.WriteString(T(mListHeader, len(subs), b.cfg.Limit(user.Plan), html.EscapeString(user.Plan)))
+		sb.WriteString("\n")
 		for i, s := range subs {
 			fmt.Fprintf(&sb, "%d. %s <code>%s</code>\n", i+1, explorer.ChainLabel(s.Chain), html.EscapeString(explorer.DisplayAddress(s.Chain, s.Address)))
 		}
 		return strings.TrimRight(sb.String(), "\n")
 	case "/remove", "/delete":
 		if len(args) != 1 {
-			return "Usage: /remove &lt;address or number from /list&gt;"
+			return T(mUsageRemove)
 		}
 		var c, addr string
 		if n, err := strconv.Atoi(args[0]); err == nil {
 			subs, err := b.store.ListSubs(ctx, chatID)
 			if err != nil {
-				return "⚠️ Temporary error, please try again later."
+				return T(mTempError)
 			}
 			if n < 1 || n > len(subs) {
-				return "❌ No such number, see /list."
+				return T(mNoSuchNumber)
 			}
 			c, addr = subs[n-1].Chain, subs[n-1].Address
 		} else {
-			c, addr, err = b.parseAddress(args[0])
+			c, addr, err = b.parseAddress(lang, args[0])
 			if err != nil {
 				return "❌ " + html.EscapeString(err.Error())
 			}
 		}
 		switch err := b.store.RemoveSub(ctx, chatID, c, addr); {
 		case errors.Is(err, ErrNotFound):
-			return "ℹ️ You are not watching this address."
+			return T(mNotWatching)
 		case err != nil:
-			return "⚠️ Temporary error, please try again later."
+			return T(mTempError)
 		}
 		b.markDirty()
-		return "🗑 Stopped watching <code>" + html.EscapeString(explorer.DisplayAddress(c, addr)) + "</code>."
+		return T(mStopped, html.EscapeString(explorer.DisplayAddress(c, addr)))
 	case "/plan":
 		subs, _ := b.store.ListSubs(ctx, chatID)
-		return fmt.Sprintf("Plan: <b>%s</b>\nAddresses: %d/%d\nPremium: up to %d addresses.",
-			html.EscapeString(user.Plan), len(subs), b.cfg.Limit(user.Plan), b.cfg.PremiumLimit)
+		how := T(mPremiumHow)
+		if b.cfg.PremiumContact != "" {
+			how = T(mPremiumContact, html.EscapeString(b.cfg.PremiumContact))
+		}
+		return T(mPlan, html.EscapeString(user.Plan), len(subs), b.cfg.Limit(user.Plan), b.cfg.PremiumLimit) + "\n" + how
 	default:
-		return "Unknown command. /help"
+		return T(mUnknown)
 	}
 }
 
-func (b *Bot) parseAddress(s string) (string, string, error) {
+func (b *Bot) parseAddress(lang, s string) (string, string, error) {
 	c, err := chainaddr.Detect(s)
 	if err != nil {
-		return "", "", errors.New("unrecognised address: send a TRON (T…), TON (UQ…/EQ…) or Ethereum (0x…) address")
+		return "", "", errors.New(tr(lang, mUnrecognised))
 	}
 	enabled := false
 	for _, x := range b.cfg.Chains {
 		enabled = enabled || x == c
 	}
 	if !enabled {
-		return "", "", fmt.Errorf("%s is not supported by this bot yet", explorer.ChainLabel(c))
+		return "", "", fmt.Errorf(tr(lang, mUnsupported), explorer.ChainLabel(c))
 	}
 	addr, err := chainaddr.Normalize(c, s)
 	if err != nil {
-		return "", "", fmt.Errorf("invalid %s address", explorer.ChainLabel(c))
+		return "", "", fmt.Errorf(tr(lang, mInvalidAddr), explorer.ChainLabel(c))
 	}
 	return c, addr, nil
 }
@@ -534,7 +545,11 @@ func (b *Bot) sendNext(ctx context.Context) {
 	}
 	b.queue = rest
 	b.mu.Unlock()
-	err := b.api.SendMessage(ctx, strconv.FormatInt(first.chatID, 10), format(batch), tgbot.SendOptions{HTML: true, DisablePreview: true})
+	lang := LangEN
+	if v, ok := b.langs.Load(first.chatID); ok {
+		lang, _ = v.(string)
+	}
+	err := b.api.SendMessage(ctx, strconv.FormatInt(first.chatID, 10), format(lang, batch), tgbot.SendOptions{HTML: true, DisablePreview: true})
 	switch {
 	case tgbot.IsForbidden(err):
 		b.log.Info("notify: user blocked the bot, pausing deliveries", "chat_id", first.chatID)
@@ -548,8 +563,8 @@ func (b *Bot) sendNext(ctx context.Context) {
 	}
 }
 
-// format renders notifications for one chat.
-func format(ns []note) string {
+// format renders notifications for one chat in lang.
+func format(lang string, ns []note) string {
 	var sb strings.Builder
 	for i, n := range ns {
 		if i > 0 {
@@ -557,25 +572,26 @@ func format(ns []note) string {
 		}
 		t, c := n.t, n.t.ChainName()
 		amt := model.HumanizeUnits(t.Amount, t.Decimals, 6) + " " + html.EscapeString(t.Symbol)
+		to, from := html.EscapeString(explorer.DisplayAddress(c, t.To)), html.EscapeString(explorer.DisplayAddress(c, t.From))
 		switch n.dir {
 		case "in":
-			fmt.Fprintf(&sb, "📥 <b>+%s</b> received on %s\n", amt, explorer.ChainLabel(c))
-			fmt.Fprintf(&sb, "To: <code>%s</code>\nFrom: <code>%s</code>\n", html.EscapeString(explorer.DisplayAddress(c, t.To)), html.EscapeString(explorer.DisplayAddress(c, t.From)))
+			fmt.Fprintf(&sb, tr(lang, mReceived)+"\n", amt, explorer.ChainLabel(c))
+			fmt.Fprintf(&sb, "%s: <code>%s</code>\n%s: <code>%s</code>\n", tr(lang, mTo), to, tr(lang, mFrom), from)
 		case "out":
-			fmt.Fprintf(&sb, "📤 <b>−%s</b> sent on %s\n", amt, explorer.ChainLabel(c))
-			fmt.Fprintf(&sb, "From: <code>%s</code>\nTo: <code>%s</code>\n", html.EscapeString(explorer.DisplayAddress(c, t.From)), html.EscapeString(explorer.DisplayAddress(c, t.To)))
+			fmt.Fprintf(&sb, tr(lang, mSent)+"\n", amt, explorer.ChainLabel(c))
+			fmt.Fprintf(&sb, "%s: <code>%s</code>\n%s: <code>%s</code>\n", tr(lang, mFrom), from, tr(lang, mTo), to)
 		default:
-			fmt.Fprintf(&sb, "🔁 <b>%s</b> self-transfer on %s\n", amt, explorer.ChainLabel(c))
-			fmt.Fprintf(&sb, "Address: <code>%s</code>\n", html.EscapeString(explorer.DisplayAddress(c, t.To)))
+			fmt.Fprintf(&sb, tr(lang, mSelf)+"\n", amt, explorer.ChainLabel(c))
+			fmt.Fprintf(&sb, "%s: <code>%s</code>\n", tr(lang, mAddress), to)
 		}
 		if t.Memo != "" {
 			memo := []rune(t.Memo)
 			if len(memo) > 120 {
 				memo = append(memo[:120], '…')
 			}
-			fmt.Fprintf(&sb, "Memo: <code>%s</code>\n", html.EscapeString(string(memo)))
+			fmt.Fprintf(&sb, "%s: <code>%s</code>\n", tr(lang, mMemo), html.EscapeString(string(memo)))
 		}
-		fmt.Fprintf(&sb, "<a href=\"%s\">View transaction</a> · %s", html.EscapeString(explorer.TxURL(t)), t.BlockTime.UTC().Format("2006-01-02 15:04 UTC"))
+		fmt.Fprintf(&sb, "<a href=\"%s\">%s</a> · %s", html.EscapeString(explorer.TxURL(t)), tr(lang, mView), t.BlockTime.UTC().Format("2006-01-02 15:04 UTC"))
 	}
 	return sb.String()
 }

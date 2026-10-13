@@ -261,6 +261,8 @@ type NotifyBot struct {
 	// MaxUsers / MaxTotalSubs cap bot-wide users and subscriptions (0 = unlimited).
 	MaxUsers     int `yaml:"max_users"`
 	MaxTotalSubs int `yaml:"max_total_subs"`
+	// PremiumContact is shown by /plan as the way to upgrade (e.g. @you or a URL).
+	PremiumContact string `yaml:"premium_contact"`
 	// CommandsPerMinute is the per-chat command rate limit (default 20).
 	CommandsPerMinute int `yaml:"commands_per_minute"`
 }
@@ -734,6 +736,7 @@ var envBindings = []envBinding{
 	{"NOTIFY_PREMIUM_LIMIT", intVal(func(c *Config) *int { return &c.NotifyBot.PremiumLimit })},
 	{"NOTIFY_MAX_USERS", intVal(func(c *Config) *int { return &c.NotifyBot.MaxUsers })},
 	{"NOTIFY_MAX_TOTAL_SUBS", intVal(func(c *Config) *int { return &c.NotifyBot.MaxTotalSubs })},
+	{"NOTIFY_PREMIUM_CONTACT", str(func(c *Config) *string { return &c.NotifyBot.PremiumContact })},
 	{"NOTIFY_COMMANDS_PER_MINUTE", intVal(func(c *Config) *int { return &c.NotifyBot.CommandsPerMinute })},
 	{"NOTIFY_MIN_AMOUNT", str(func(c *Config) *string { return &c.NotifyBot.MinAmount })},
 	{"HTTP_HEALTH_DETAILS", boolean(func(c *Config) *bool { return &c.HTTP.HealthDetails })},

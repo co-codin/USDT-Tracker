@@ -104,8 +104,9 @@ type Message struct {
 		Type string `json:"type"`
 	} `json:"chat"`
 	From *struct {
-		ID       int64  `json:"id"`
-		Username string `json:"username"`
+		ID           int64  `json:"id"`
+		Username     string `json:"username"`
+		LanguageCode string `json:"language_code"` // IETF tag of the user's client, e.g. "zh-hans", "ru"
 	} `json:"from"`
 	Text string `json:"text"`
 }
@@ -150,7 +151,7 @@ func (c *Client) call(ctx context.Context, method string, params, out any, attem
 			return retry.Permanent(errors.New("tgbot: invalid api base"))
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := c.hc.Do(req)
+		resp, err := c.hc.Do(req) //nolint:bodyclose // closed by httpx.ReadBody
 		if err != nil {
 			if ctx.Err() != nil {
 				return retry.Permanent(ctx.Err())

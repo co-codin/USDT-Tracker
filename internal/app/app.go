@@ -152,6 +152,7 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger, opts Options)
 			FreeLimit: nb.FreeLimit, PremiumLimit: nb.PremiumLimit, MinAmount: nb.MinAmount,
 			Chains: chains, PollTimeout: nb.PollTimeout.D(),
 			MaxUsers: nb.MaxUsers, MaxTotalSubs: nb.MaxTotalSubs, CommandsPerMinute: nb.CommandsPerMinute,
+			PremiumContact: nb.PremiumContact,
 		}, pg.Notify(), api, log.With("component", "notify_bot"))
 		if err != nil {
 			return nil, errors.Join(err, a.disp.Close())
